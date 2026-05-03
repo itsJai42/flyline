@@ -11,6 +11,7 @@ use itertools::Itertools;
 use ratatui::prelude::*;
 use skim::fuzzy_matcher::FuzzyMatcher;
 use skim::fuzzy_matcher::arinae::ArinaeMatcher;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::vec;
 
@@ -285,36 +286,8 @@ mod description_tests {
     use super::*;
 
     #[test]
-    fn split_no_tab() {
-        let (text, frames) = split_completion_description("hello");
-        assert_eq!(text, "hello");
-        assert!(frames.is_empty());
-    }
-
-    #[test]
-    fn split_single_tab_gives_one_frame() {
-        let (text, frames) = split_completion_description("hello\tworld");
-        assert_eq!(text, "hello");
-        assert_eq!(frames, vec!["world".to_string()]);
-    }
-
-    #[test]
-    fn split_multiple_tabs_give_multiple_frames() {
-        let (text, frames) = split_completion_description("opt\tframe1\tframe2\tframe3");
-        assert_eq!(text, "opt");
-        assert_eq!(
-            frames,
-            vec![
-                "frame1".to_string(),
-                "frame2".to_string(),
-                "frame3".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn match_text_raw_strips_description() {
-        let item = MaybeProcessedSuggestion::Raw {
+    fn raw_match_text_strips_description() {
+        let item = UnprocessedSuggestion {
             raw_text: "git-commit\tRecord changes".to_string(),
             full_path: None,
             flags: crate::bash_funcs::CompletionFlags::default(),
@@ -324,8 +297,8 @@ mod description_tests {
     }
 
     #[test]
-    fn match_text_raw_no_tab_unchanged() {
-        let item = MaybeProcessedSuggestion::Raw {
+    fn raw_match_text_no_tab_unchanged() {
+        let item = UnprocessedSuggestion {
             raw_text: "git-commit".to_string(),
             full_path: None,
             flags: crate::bash_funcs::CompletionFlags::default(),
@@ -494,211 +467,230 @@ impl Ord for ProcessedSuggestion {
     }
 }
 
+/// Raw completion from bash plus the metadata needed to post-process it into
+/// a [`ProcessedSuggestion`] via [`into_processed`].
+///
+/// The expensive filesystem calls (`is_dir`, `style_for_path`,
+/// `fully_expand_path`) only happen when this is converted to a
+/// [`ProcessedSuggestion`].
+#[derive(Debug, Clone, Default)]
+pub struct UnprocessedSuggestion {
+    pub raw_text: String,
+    pub full_path: Option<PathBuf>,
+    pub flags: bash_funcs::CompletionFlags,
+    pub word_under_cursor: String,
+}
+
+impl UnprocessedSuggestion {
+    pub fn match_text(&self) -> &str {
+        Self::split_completion_description(&self.raw_text).0
+    }
+
+    /// Split a raw completion string into the completion text and description frames.
+    ///
+    /// Any tab characters in `raw` serve as separators: the text before the first
+    /// tab is the value that gets inserted; each subsequent tab-separated segment
+    /// is one frame of the animated description.
+    fn split_completion_description(raw: &str) -> (&str, Vec<String>) {
+        match raw.split_once('\t') {
+            None => (raw, vec![]),
+            Some((text, rest)) => {
+                let frames: Vec<String> = rest.split('\t').map(|s| s.to_owned()).collect();
+                (text, frames)
+            }
+        }
+    }
+
+    /// Post-process a single raw completion string into a [`ProcessedSuggestion`].
+    ///
+    /// This performs quoting, filesystem checks (`is_dir`, `style_for_path`), and
+    /// suffix computation.  Expensive for filenames due to syscalls; call lazily.
+    ///
+    /// If `raw_sug` contains tab characters the text before the first tab is the
+    /// completion value; the remaining tab-separated segments are treated as
+    /// animation frames for the description (used when no higher-priority
+    /// description type applies).
+    pub fn into_processed(self) -> ProcessedSuggestion {
+        let raw_sug = &self.raw_text;
+        let mut path_to_use = self.full_path;
+        let comp_result_flags = self.flags;
+        let word_under_cursor = &self.word_under_cursor;
+
+        let (sug, desc_frames) = Self::split_completion_description(raw_sug);
+        let mut sug = sug.to_string();
+
+        if comp_result_flags.filename_completion_desired {
+            if path_to_use.is_none() {
+                path_to_use = Some(std::path::PathBuf::from(bash_funcs::fully_expand_path(
+                    &sug,
+                )));
+            }
+        }
+
+        let suffix_char = if path_to_use.as_ref().is_some_and(|p| p.is_dir()) {
+            sug = format!("{}/", sug);
+            None
+        } else if comp_result_flags.quote_type.is_some_and(|q| {
+            q == bash_funcs::QuoteType::SingleQuote || q == bash_funcs::QuoteType::DoubleQuote
+        }) {
+            // If we put a space after a filename that is quoted, bash thinks we want a filename ending in a space.
+            None
+        } else if comp_result_flags.no_suffix_desired {
+            None
+        } else if comp_result_flags.suffix_character == ' ' {
+            if sug.ends_with(" ") { None } else { Some(' ') }
+        } else {
+            Some(comp_result_flags.suffix_character)
+        };
+
+        let quoted = if comp_result_flags.filename_quoting_desired
+            && comp_result_flags.filename_completion_desired
+        {
+            if !word_under_cursor.is_empty()
+                && let Some(new_suffix) = sug.strip_prefix(word_under_cursor)
+            {
+                let quoted_suffix = bash_funcs::quoting_function_rust(
+                    new_suffix,
+                    comp_result_flags.quote_type.unwrap_or_default(),
+                    true,
+                    false,
+                );
+                format!("{}{}", word_under_cursor, quoted_suffix)
+            } else {
+                bash_funcs::quoting_function_rust(
+                    &sug,
+                    comp_result_flags.quote_type.unwrap_or_default(),
+                    true,
+                    false,
+                )
+            }
+        } else {
+            sug.to_string()
+        };
+
+        let (quoted_no_prefix, prefix) = {
+            // wuc_prefix does not depend on sug. only wuc
+            let wuc_prefix = if comp_result_flags.filename_completion_desired {
+                if !word_under_cursor.contains("/") {
+                    "".to_string()
+                } else if word_under_cursor.ends_with("/") {
+                    word_under_cursor.to_string()
+                } else {
+                    let parent = Path::new(word_under_cursor)
+                        .parent()
+                        .and_then(|p| p.to_str())
+                        .map(|s| {
+                            if !s.ends_with("/") {
+                                format!("{}/", s)
+                            } else {
+                                s.to_string()
+                            }
+                        });
+
+                    if let Some(p) = parent {
+                        p
+                    } else {
+                        "".to_string()
+                    }
+                }
+            } else {
+                "".to_string()
+            };
+
+            if let Some(quoted_no_prefix) = quoted.strip_prefix(&wuc_prefix) {
+                (quoted_no_prefix.to_string(), wuc_prefix)
+            } else {
+                (quoted.to_string(), "".to_string())
+            }
+        };
+
+        let style = path_to_use
+            .as_ref()
+            .and_then(|p| bash_funcs::style_for_path(p));
+        let mtime = path_to_use
+            .as_ref()
+            .and_then(|p| p.metadata().ok())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+
+        // Determine description type by priority:
+        let description = if let Some(ts) = mtime {
+            SuggestionDescription::LastMTime(ts)
+        } else if let Some(easing) = CursorEasing::try_from_value_name(&sug) {
+            SuggestionDescription::Animation(easing_animation_frames(easing))
+        } else if !desc_frames.is_empty() {
+            SuggestionDescription::Animation(
+                desc_frames
+                    .into_iter()
+                    .map(|f| ansi_string_to_spans(&f))
+                    .collect(),
+            )
+        } else {
+            SuggestionDescription::Static(vec![])
+        };
+
+        let suffix_str = suffix_char.map(|f| f.to_string()).unwrap_or_default();
+        let suggestion = ProcessedSuggestion::new(quoted_no_prefix, prefix, &suffix_str)
+            .with_description(description);
+        match style {
+            Some(s) => suggestion.with_style(s),
+            None => suggestion,
+        }
+    }
+}
+
 /// A completion that may or may not have been post-processed yet.
 ///
-/// The `Ready` variant holds a fully processed [`Suggestion`] (used by code
-/// paths that produce suggestions directly, e.g. env-var or tilde expansion).
+/// The `Processed` variant holds a fully processed [`ProcessedSuggestion`] (used
+/// by code paths that produce suggestions directly, e.g. env-var or tilde
+/// expansion).
 ///
-/// The `Raw` variant holds a raw completion string from bash together with the
-/// metadata needed to produce a [`Suggestion`] on demand via
-/// [`post_process_completion`].  The expensive filesystem calls (`is_dir`,
-/// `style_for_path`, `fully_expand_path`) are deferred until the item is
-/// actually rendered or accepted.
+/// The `Unprocessed` variant holds a [`UnprocessedSuggestion`] from bash that needs to be run
+/// through [`into_processed`] before it can be rendered.
 #[derive(Debug, Clone)]
 pub enum MaybeProcessedSuggestion {
-    Ready(ProcessedSuggestion),
-    Raw {
-        raw_text: String,
-        full_path: Option<PathBuf>,
-        flags: bash_funcs::CompletionFlags,
-        word_under_cursor: String,
-    },
+    Processed(ProcessedSuggestion),
+    Unprocessed(UnprocessedSuggestion),
 }
 
 impl MaybeProcessedSuggestion {
-    /// The text used for fuzzy matching and sorting.
-    ///
-    /// For `Raw` items, only the text up to the first tab character is considered
-    /// (the remainder is a display-only description).
+    /// The text used for sorting/dedup before any post-processing happens.
+    /// For unprocessed items, only the text up to the first tab is considered (the
+    /// remainder is a display-only description).
     pub fn match_text(&self) -> &str {
         match self {
-            MaybeProcessedSuggestion::Ready(s) => &s.s,
-            MaybeProcessedSuggestion::Raw { raw_text, .. } => raw_text
-                .split_once('\t')
-                .map(|(text, _)| text)
-                .unwrap_or(raw_text),
+            MaybeProcessedSuggestion::Processed(s) => &s.s,
+            MaybeProcessedSuggestion::Unprocessed(r) => r.match_text(),
         }
     }
 
-    pub fn to_processed_sug(&mut self) -> ProcessedSuggestion {
+    /// Eagerly process this suggestion in place and return a reference to the
+    /// processed value.
+    pub fn processed(&mut self) -> &ProcessedSuggestion {
+        if let MaybeProcessedSuggestion::Unprocessed(raw) = self {
+            let raw = std::mem::take(raw);
+            *self = MaybeProcessedSuggestion::Processed(raw.into_processed());
+        }
+
         match self {
-            MaybeProcessedSuggestion::Ready(s) => s.clone(),
-            MaybeProcessedSuggestion::Raw {
-                raw_text,
-                full_path,
-                flags,
-                word_under_cursor,
-            } => {
-                let processed =
-                    post_process_completion(raw_text, full_path.clone(), *flags, word_under_cursor);
-                *self = MaybeProcessedSuggestion::Ready(processed.clone());
-                processed
-            }
+            MaybeProcessedSuggestion::Processed(p) => p,
+            MaybeProcessedSuggestion::Unprocessed(_) => unreachable!(),
         }
     }
 }
 
-/// Split a raw completion string into the completion text and description frames.
-///
-/// Any tab characters in `raw` serve as separators: the text before the first
-/// tab is the value that gets inserted; each subsequent tab-separated segment
-/// is one frame of the animated description.
-pub(crate) fn split_completion_description(raw: &str) -> (&str, Vec<String>) {
-    match raw.split_once('\t') {
-        None => (raw, vec![]),
-        Some((text, rest)) => {
-            let frames: Vec<String> = rest.split('\t').map(|s| s.to_owned()).collect();
-            (text, frames)
+const CHUNK_PROCESSING_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
+pub fn try_process_suggestions(suggestions: &mut Vec<MaybeProcessedSuggestion>) -> bool {
+    let start_time = std::time::Instant::now();
+    for sug in suggestions.iter_mut() {
+        if start_time.elapsed() > CHUNK_PROCESSING_TIMEOUT {
+            return false;
         }
+        sug.processed();
     }
-}
-
-/// Post-process a single raw completion string into a [`Suggestion`].
-///
-/// This performs quoting, filesystem checks (`is_dir`, `style_for_path`), and
-/// suffix computation.  Expensive for filenames due to syscalls; call lazily.
-///
-/// If `raw_sug` contains tab characters the text before the first tab is the
-/// completion value; the remaining tab-separated segments are treated as
-/// animation frames for the description (used when no higher-priority
-/// description type applies).
-pub fn post_process_completion(
-    raw_sug: &str,
-    mut path_to_use: Option<std::path::PathBuf>,
-    comp_result_flags: bash_funcs::CompletionFlags,
-    word_under_cursor: &str,
-) -> ProcessedSuggestion {
-    let (sug, desc_frames) = split_completion_description(raw_sug);
-    let mut sug = sug.to_string();
-
-    if comp_result_flags.filename_completion_desired {
-        if path_to_use.is_none() {
-            path_to_use = Some(std::path::PathBuf::from(bash_funcs::fully_expand_path(
-                &sug,
-            )));
-        }
-    }
-
-    let suffix_char = if path_to_use.as_ref().is_some_and(|p| p.is_dir()) {
-        sug = format!("{}/", sug);
-        None
-    } else if comp_result_flags.quote_type.is_some_and(|q| {
-        q == bash_funcs::QuoteType::SingleQuote || q == bash_funcs::QuoteType::DoubleQuote
-    }) {
-        // If we put a space after a filename that is quoted, bash thinks we want a filename ending in a space.
-        None
-    } else if comp_result_flags.no_suffix_desired {
-        None
-    } else if comp_result_flags.suffix_character == ' ' {
-        if sug.ends_with(" ") { None } else { Some(' ') }
-    } else {
-        Some(comp_result_flags.suffix_character)
-    };
-
-    let quoted = if comp_result_flags.filename_quoting_desired
-        && comp_result_flags.filename_completion_desired
-    {
-        if !word_under_cursor.is_empty()
-            && let Some(new_suffix) = sug.strip_prefix(word_under_cursor)
-        {
-            let quoted_suffix = bash_funcs::quoting_function_rust(
-                new_suffix,
-                comp_result_flags.quote_type.unwrap_or_default(),
-                true,
-                false,
-            );
-            format!("{}{}", word_under_cursor, quoted_suffix)
-        } else {
-            bash_funcs::quoting_function_rust(
-                &sug,
-                comp_result_flags.quote_type.unwrap_or_default(),
-                true,
-                false,
-            )
-        }
-    } else {
-        sug.to_string()
-    };
-
-    let (quoted_no_prefix, prefix) = {
-        // wuc_prefix does not depend on sug. only wuc
-        let wuc_prefix = if comp_result_flags.filename_completion_desired {
-            if !word_under_cursor.contains("/") {
-                "".to_string()
-            } else if word_under_cursor.ends_with("/") {
-                word_under_cursor.to_string()
-            } else {
-                let parent = Path::new(word_under_cursor)
-                    .parent()
-                    .and_then(|p| p.to_str())
-                    .map(|s| {
-                        if !s.ends_with("/") {
-                            format!("{}/", s)
-                        } else {
-                            s.to_string()
-                        }
-                    });
-
-                if let Some(p) = parent {
-                    p
-                } else {
-                    "".to_string()
-                }
-            }
-        } else {
-            "".to_string()
-        };
-
-        if let Some(quoted_no_prefix) = quoted.strip_prefix(&wuc_prefix) {
-            (quoted_no_prefix.to_string(), wuc_prefix)
-        } else {
-            (quoted.to_string(), "".to_string())
-        }
-    };
-
-    let style = path_to_use
-        .as_ref()
-        .and_then(|p| bash_funcs::style_for_path(p));
-    let mtime = path_to_use
-        .as_ref()
-        .and_then(|p| p.metadata().ok())
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs());
-
-    // Determine description type by priority:
-    let description = if let Some(ts) = mtime {
-        SuggestionDescription::LastMTime(ts)
-    } else if let Some(easing) = CursorEasing::try_from_value_name(&sug) {
-        SuggestionDescription::Animation(easing_animation_frames(easing))
-    } else if !desc_frames.is_empty() {
-        SuggestionDescription::Animation(
-            desc_frames
-                .into_iter()
-                .map(|f| ansi_string_to_spans(&f))
-                .collect(),
-        )
-    } else {
-        SuggestionDescription::Static(vec![])
-    };
-
-    let suffix_str = suffix_char.map(|f| f.to_string()).unwrap_or_default();
-    let suggestion = ProcessedSuggestion::new(quoted_no_prefix, prefix, &suffix_str)
-        .with_description(description);
-    match style {
-        Some(s) => suggestion.with_style(s),
-        None => suggestion,
-    }
+    true
 }
 
 /// Lightweight entry in the filtered suggestion list.
@@ -706,16 +698,30 @@ pub fn post_process_completion(
 /// Unlike [`SuggestionFormatted`], this stores only the index, score, and
 /// fuzzy-match indices — no precomputed spans or display widths.  The
 /// expensive rendering work is done on demand in [`ActiveSuggestions::into_grid`].
+///
+/// `suggestion_idx` is an index into [`ActiveSuggestions::processed_suggestions`].
 #[derive(Debug, Clone)]
 struct FilteredItem {
     suggestion_idx: usize,
     score: i64,
     matching_indices: Vec<usize>,
-    was_for_raw: bool,
+}
+
+pub struct ColumnInfo {
+    pub global_col_idx: usize,
+    pub items: Vec<(SuggestionFormatted, bool)>,
+    pub width: usize,
+    pub is_selected_col: bool,
 }
 
 pub struct ActiveSuggestions {
-    all_maybe_processed_suggestions: Vec<MaybeProcessedSuggestion>,
+    /// Raw completions waiting to be post-processed.  Drained from the front
+    /// in chunks of [`PROCESS_CHUNK_SIZE`] each time [`into_grid`] is called or
+    /// fuzzy matching runs.
+    unprocessed_suggestions: VecDeque<UnprocessedSuggestion>,
+    /// Fully post-processed suggestions.  This is the only collection used by
+    /// fuzzy matching, rendering, and acceptance logic.
+    processed_suggestions: Vec<ProcessedSuggestion>,
     filtered_suggestions: Vec<FilteredItem>,
     /// 2-D position of the currently-selected suggestion within the grid.
     /// `selected_col * last_num_rows_per_col + selected_row` gives the 1-D
@@ -723,7 +729,6 @@ pub struct ActiveSuggestions {
     pub selected_row: usize,
     pub selected_col: usize,
     pub word_under_cursor: SubString,
-    word_under_cursor_dequoted: String,
     /// Number of suggestion rows per column as used in the last rendered
     /// grid.  Kept in sync by [`update_grid_size`].
     last_num_rows_per_col: usize,
@@ -740,24 +745,23 @@ pub struct ActiveSuggestions {
     fuzzy_matcher: ArinaeMatcher,
     /// How long it took to generate the completions.
     pub load_time: std::time::Duration,
-    should_fuzzy_match: bool,
 }
 
 impl std::fmt::Debug for ActiveSuggestions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActiveSuggestions")
             .field(
-                "all_suggestions_len",
-                &self.all_maybe_processed_suggestions.len(),
+                "unprocessed_suggestions_len",
+                &self.unprocessed_suggestions.len(),
+            )
+            .field(
+                "processed_suggestions_len",
+                &self.processed_suggestions.len(),
             )
             .field("filtered_suggestions_len", &self.filtered_suggestions.len())
             .field("selected_row", &self.selected_row)
             .field("selected_col", &self.selected_col)
             .field("word_under_cursor", &self.word_under_cursor)
-            .field(
-                "word_under_cursor_dequoted",
-                &self.word_under_cursor_dequoted,
-            )
             .field("last_num_rows_per_col", &self.last_num_rows_per_col)
             .field("last_num_visible_cols", &self.last_num_visible_cols)
             .field("last_num_data_cols", &self.last_num_data_cols)
@@ -765,48 +769,72 @@ impl std::fmt::Debug for ActiveSuggestions {
             .finish()
     }
 }
-pub struct ColumnInfo {
-    pub global_col_idx: usize,
-    pub items: Vec<(SuggestionFormatted, bool)>,
-    pub width: usize,
-    pub is_selected_col: bool,
-}
+
 impl ActiveSuggestions {
     pub fn new<'underlying_buffer>(
         suggestions: Vec<MaybeProcessedSuggestion>,
         word_under_cursor: SubString,
         load_time: std::time::Duration,
     ) -> Self {
-        let filtered_suggestions = vec![];
         let sug_len = suggestions.len();
 
+        // Split incoming suggestions into the two backing vecs.  Already-ready
+        // suggestions go directly into `processed_suggestions`; raw ones are
+        // queued up in `unprocessed_suggestions` and converted lazily in
+        // chunks of PROCESS_CHUNK_SIZE.
+        let mut processed_suggestions: Vec<ProcessedSuggestion> = Vec::new();
+        let mut unprocessed_suggestions: VecDeque<UnprocessedSuggestion> = VecDeque::new();
+        for s in suggestions {
+            match s {
+                MaybeProcessedSuggestion::Processed(p) => processed_suggestions.push(p),
+                MaybeProcessedSuggestion::Unprocessed(r) => unprocessed_suggestions.push_back(r),
+            }
+        }
+
         let mut active_sug = ActiveSuggestions {
-            all_maybe_processed_suggestions: suggestions,
-            filtered_suggestions,
+            unprocessed_suggestions,
+            processed_suggestions,
+            filtered_suggestions: vec![],
             selected_row: 0,
             selected_col: 0,
             word_under_cursor: word_under_cursor.clone(),
-            word_under_cursor_dequoted: bash_funcs::dequoting_function_rust(&word_under_cursor.s),
             last_num_rows_per_col: 0,
             last_num_visible_cols: 0,
             last_num_data_cols: 0,
             col_window_to_show: StatefulSlidingWindow::new(0, 1, sug_len, Some(1)),
             fuzzy_matcher: ArinaeMatcher::new(skim::CaseMatching::Smart, true),
             load_time,
-            should_fuzzy_match: true,
         };
 
-        active_sug.update_word_under_cursor(&word_under_cursor);
-
-        if active_sug.filtered_suggestions_len() == 0 {
-            active_sug.should_fuzzy_match = false;
-            active_sug.update_word_under_cursor(&word_under_cursor);
-        }
+        active_sug.update_fuzzy_filtered();
         active_sug
     }
 
+    /// Move up to [`PROCESS_CHUNK_SIZE`] entries from `unprocessed_suggestions`
+    /// into `processed_suggestions`, returning the range of newly-processed
+    /// indices in `processed_suggestions`.
+    fn process_chunk(&mut self) -> std::ops::Range<usize> {
+        let max_to_process = self.unprocessed_suggestions.len();
+        if max_to_process == 0 {
+            let len = self.processed_suggestions.len();
+            return len..len;
+        }
+        let start = self.processed_suggestions.len();
+        // Pop from the front so the original ordering is preserved.  VecDeque
+        // makes this O(1) per element.
+        let start_time = std::time::Instant::now();
+        for _ in 0..max_to_process {
+            if let Some(raw) = self.unprocessed_suggestions.pop_front() {
+                self.processed_suggestions.push(raw.into_processed());
+            }
+            if start_time.elapsed() > CHUNK_PROCESSING_TIMEOUT {
+                break;
+            }
+        }
+        start..self.processed_suggestions.len()
+    }
+
     pub fn on_tab(&mut self, shift_tab: bool) {
-        // Logic to handle tab key when active suggestions are present
         if shift_tab {
             self.on_up_arrow();
         } else {
@@ -822,7 +850,7 @@ impl ActiveSuggestions {
     }
 
     /// Set the selected position from a flat (1-D) suggestion index.
-    fn set_from_1d_index(&mut self, idx: usize) {
+    pub fn set_selected_by_idx(&mut self, idx: usize) {
         if self.last_num_rows_per_col == 0 {
             self.selected_row = idx;
             self.selected_col = 0;
@@ -849,7 +877,6 @@ impl ActiveSuggestions {
         }
     }
 
-    // TODO arrow keys when not all suggestions are visible
     pub fn on_right_arrow(&mut self) {
         let n = self.filtered_suggestions.len();
         if n == 0 || self.last_num_rows_per_col == 0 {
@@ -935,10 +962,6 @@ impl ActiveSuggestions {
         }
     }
 
-    pub fn set_selected_by_idx(&mut self, idx: usize) {
-        self.set_from_1d_index(idx);
-    }
-
     /// Return the portion of the suggestions grid that fits within the given
     /// terminal width, starting from column `col_offset`.
     pub fn into_grid(
@@ -947,6 +970,13 @@ impl ActiveSuggestions {
         max_width: usize,
         palette: &Palette,
     ) -> Vec<ColumnInfo> {
+        // Try to convert another chunk of unprocessed suggestions before
+        // rendering so they become available in subsequent frames.
+        let newly_processed = self.process_chunk();
+        if !newly_processed.is_empty() {
+            self.update_fuzzy_filtered();
+        }
+
         let selected_1d = self.current_1d_index();
         let n = self.filtered_suggestions.len();
         if n == 0 || max_rows == 0 {
@@ -973,36 +1003,16 @@ impl ActiveSuggestions {
 
         // First round: try and fit as many columns as possible with their full untruncated width.
         for col_idx in self.col_window_to_show.get_window_range().start..=max_col_index {
-            // Build the column, processing each item lazily.
             let start = col_idx * max_rows;
             let end = (start + max_rows).min(n);
 
             let col_items: Vec<(SuggestionFormatted, bool)> = (start..end)
                 .map(|filtered_idx| {
-                    {
-                        let fi: &FilteredItem = &self.filtered_suggestions[filtered_idx];
-                        self.all_maybe_processed_suggestions[fi.suggestion_idx].to_processed_sug();
-
-                        let unprocessed_suggestion =
-                            &self.all_maybe_processed_suggestions[fi.suggestion_idx];
-
-                        if fi.was_for_raw {
-                            if let Some(new_if) = self.fuzzy_match_for_suggestion(
-                                fi.suggestion_idx,
-                                unprocessed_suggestion,
-                            ) {
-                                self.filtered_suggestions[filtered_idx] = new_if;
-                            }
-                            self.filtered_suggestions[filtered_idx].was_for_raw = false;
-                        }
-                    }
-
                     let fi = &self.filtered_suggestions[filtered_idx];
-                    let suggestion =
-                        self.all_maybe_processed_suggestions[fi.suggestion_idx].to_processed_sug();
+                    let suggestion = &self.processed_suggestions[fi.suggestion_idx];
 
                     let formatted = SuggestionFormatted::new(
-                        &suggestion,
+                        suggestion,
                         fi.suggestion_idx,
                         fi.matching_indices.clone(),
                         palette,
@@ -1102,66 +1112,50 @@ impl ActiveSuggestions {
     }
 
     pub fn all_suggestions_len(&self) -> usize {
-        self.all_maybe_processed_suggestions.len()
+        self.processed_suggestions.len() + self.unprocessed_suggestions.len()
     }
 
-    fn fuzzy_match_for_suggestion(
+    /// Fuzzy match a single processed suggestion against the current pattern.
+    fn fuzzy_match_for_processed(
         &self,
         idx: usize,
-        item: &MaybeProcessedSuggestion,
+        sug: &ProcessedSuggestion,
     ) -> Option<FilteredItem> {
-        let was_for_raw = matches!(item, MaybeProcessedSuggestion::Raw { .. });
-
-        if !self.should_fuzzy_match {
-            return Some(FilteredItem {
-                score: 0,
-                suggestion_idx: idx,
-                matching_indices: vec![],
-                was_for_raw,
-            });
-        }
-
-        let pattern = match item {
-            MaybeProcessedSuggestion::Raw { .. } => &self.word_under_cursor_dequoted,
-            MaybeProcessedSuggestion::Ready(sug) => {
-                let pattern_with_prefix = &self.word_under_cursor.s;
-                pattern_with_prefix
-                    .strip_prefix(&sug.prefix)
-                    .unwrap_or(pattern_with_prefix)
-            }
-        };
+        let pattern_with_prefix = &self.word_under_cursor.s;
+        let pattern = pattern_with_prefix
+            .strip_prefix(&sug.prefix)
+            .unwrap_or(pattern_with_prefix);
 
         self.fuzzy_matcher
-            .fuzzy_indices(item.match_text(), pattern)
+            .fuzzy_indices(&sug.s, pattern)
             .map(|(score, indices)| FilteredItem {
                 score,
                 suggestion_idx: idx,
                 matching_indices: indices,
-                was_for_raw,
             })
     }
 
-    /// Apply fuzzy search filtering to the suggestions based on the given pattern.
     pub fn update_word_under_cursor(&mut self, new_word_under_cursor: &SubString) {
         self.word_under_cursor = new_word_under_cursor.clone();
+        self.update_fuzzy_filtered();
+    }
 
+    /// Apply fuzzy search filtering to the suggestions based on the given pattern.
+    fn update_fuzzy_filtered(&mut self) {
         let raw_pattern = self.word_under_cursor.s.as_str();
-        let dequoted_pattern = bash_funcs::dequoting_function_rust(&self.word_under_cursor.s);
         log::debug!(
-            "Applying fuzzy filter with raw_pattern {:?} and dequoted_pattern {:?} on {} suggestions",
+            "Applying fuzzy filter with raw_pattern {:?} on {} processed suggestions ({} still unprocessed)",
             raw_pattern,
-            dequoted_pattern,
-            self.all_maybe_processed_suggestions.len()
+            self.processed_suggestions.len(),
+            self.unprocessed_suggestions.len()
         );
 
-        // Score and filter suggestions using the stored matcher
+        // Score and filter processed suggestions using the stored matcher.
         self.filtered_suggestions = self
-            .all_maybe_processed_suggestions
+            .processed_suggestions
             .iter()
             .enumerate()
-            .filter_map(|(idx, item): (usize, &MaybeProcessedSuggestion)| {
-                self.fuzzy_match_for_suggestion(idx, item)
-            })
+            .filter_map(|(idx, sug)| self.fuzzy_match_for_processed(idx, sug))
             .collect();
 
         // Sort by score (descending - higher scores are better matches)
@@ -1178,13 +1172,15 @@ impl ActiveSuggestions {
     }
 
     pub fn try_accept(mut self, buffer: &mut TextBuffer) -> Option<Self> {
-        match self.all_maybe_processed_suggestions.as_mut_slice() {
-            [] => {
-                log::debug!("No completions found. all_maybe_processed_suggestions is empty");
-                return Some(self);
+        // If there is exactly one suggestion in total (whether processed or
+        // not), auto-accept it.  Make sure it is processed first.
+        if self.all_suggestions_len() == 1 {
+            // Drain any pending unprocessed entry so we have a Suggestion.
+            // There is at most one item here so this is O(1).
+            while let Some(raw) = self.unprocessed_suggestions.pop_front() {
+                self.processed_suggestions.push(raw.into_processed());
             }
-            [single_suggestion] => {
-                let suggestion = single_suggestion.to_processed_sug();
+            if let Some(suggestion) = self.processed_suggestions.first().cloned() {
                 self.accept_item(&suggestion, buffer);
                 log::debug!(
                     "Only one completion found: auto-accepted '{:?}'",
@@ -1192,13 +1188,16 @@ impl ActiveSuggestions {
                 );
                 return None;
             }
-            _ => {}
+        }
+        if self.all_suggestions_len() == 0 {
+            log::debug!("No completions found. suggestion vecs are empty");
+            return Some(self);
         }
 
         match self.filtered_suggestions.as_slice() {
             [] => {
                 log::debug!("No completions found. filtered_suggestions is empty");
-                return Some(self);
+                Some(self)
             }
             [_filtered_item] => {
                 self.accept_selected_filtered_item(buffer);
@@ -1221,21 +1220,17 @@ impl ActiveSuggestions {
             }
         };
 
-        match self
-            .all_maybe_processed_suggestions
-            .get_mut(filtered_item.suggestion_idx)
-        {
+        match self.processed_suggestions.get(filtered_item.suggestion_idx) {
             Some(s) => {
-                let suggestion = s.to_processed_sug();
+                let suggestion = s.clone();
                 self.accept_item(&suggestion, buffer);
             }
             None => {
                 log::warn!(
-                    "Suggestion index {} out of bounds (len={})",
+                    "Suggestion index {} out of bounds (processed len={})",
                     filtered_item.suggestion_idx,
-                    self.all_maybe_processed_suggestions.len()
+                    self.processed_suggestions.len()
                 );
-                return;
             }
         };
     }

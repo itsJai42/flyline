@@ -81,6 +81,11 @@ fn set_panic_hook(extended_key_codes: bool) {
 }
 
 fn stdin_unavailable_reason() -> Option<&'static str> {
+    // I was finding bash processes were often spinning trying to read from stdin
+    // When the terminal emulator closed.
+    // I believe this problem was fixed by setting `use-dev-tty` in crossterm.
+    // The following are defensive checks to avoid calling crossterm poll when the terminal closes.
+
     // If stdin has been closed outright, bail out before crossterm enters its
     // Unix event loop. In crossterm 0.29 that path can spin on closed input.
     if unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFD) } == -1
@@ -141,6 +146,11 @@ fn poll_terminal_event(timeout: Duration) -> std::io::Result<Option<CrosstermEve
         log::error!("Cannot read terminal events: {}", reason);
         return Err(Error::new(ErrorKind::UnexpectedEof, reason));
     }
+
+    log::trace!(
+        "Polling for terminal event with timeout of {:?}...",
+        timeout
+    );
 
     if event::poll(timeout)? {
         event::read().map(Some)

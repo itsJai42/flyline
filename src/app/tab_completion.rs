@@ -51,10 +51,7 @@ use skim::fuzzy_matcher::arinae::ArinaeMatcher;
 enum CompSpecCompletionResult {
     /// We have suggestions to return.
     Found(ActiveSuggestionsBuilder),
-    /// No suggestions, but bash returned flags worth propagating to
-    /// subsequent completion types (e.g. quote type).
-    NoneWithFlags(bash_funcs::CompletionFlags),
-    /// No suggestions and nothing to propagate.
+    /// No suggestions.
     None,
 }
 
@@ -190,7 +187,7 @@ fn run_comp_spec_completion(
                         }),
                 ))
             }
-            Ok(comp_result) => CompSpecCompletionResult::NoneWithFlags(comp_result.flags),
+            Ok(_) => CompSpecCompletionResult::None,
             _ => CompSpecCompletionResult::None,
         }
     }
@@ -281,11 +278,6 @@ fn gen_completions_uncomitted(
                     CompSpecCompletionResult::Found(builder) => {
                         return Some(builder);
                     }
-                    CompSpecCompletionResult::NoneWithFlags(flags) => {
-                        // I am not checking if the user wants more completions (i.e. readline_default_fallback_desired)
-                        // Always try to produce secondary completions
-                        comp_res_flags = flags;
-                    }
                     CompSpecCompletionResult::None => {}
                 }
             }
@@ -351,9 +343,6 @@ fn gen_completions_uncomitted(
                             .collect();
                         builder = builder.with_auto_accept_if_solo(false);
                         return Some(builder);
-                    }
-                    CompSpecCompletionResult::NoneWithFlags(flags) => {
-                        comp_res_flags = flags;
                     }
                     CompSpecCompletionResult::None => {}
                 }

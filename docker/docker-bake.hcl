@@ -36,9 +36,6 @@ target "extract-integration-test-build-artifact" {
     output = ["type=local,dest=docker/build-integration-test"]
     dockerfile = "docker/builder.Dockerfile"
     target = "flyline-built-artifact"
-    args = {
-        CARGO_FEATURES = "integration-tests"
-    }
 }
 
 target "extract-pre-bash-4-4-integration-test-build-artifact" {
@@ -47,7 +44,7 @@ target "extract-pre-bash-4-4-integration-test-build-artifact" {
     dockerfile = "docker/builder.Dockerfile"
     target = "flyline-built-artifact"
     args = {
-        CARGO_FEATURES = "integration-tests,pre_bash_4_4"
+        CARGO_FEATURES = "pre_bash_4_4"
     }
 }
 
@@ -55,9 +52,6 @@ target "lib-tests" {
     context = "."
     dockerfile = "docker/builder.Dockerfile"
     target = "flyline-lib-tests"
-    args = {
-        CARGO_FEATURES = "integration-tests"
-    }
 }
 
 target "specific-bash-version" {
@@ -120,13 +114,7 @@ target "bash-integration-tests-pre-4-4" {
 }
 
 
-target "tab-completion-tests" {
-    context = "."
-    contexts = {
-        built-artifact = "target:extract-integration-test-build-artifact"
-    }
-    dockerfile = "docker/tab_completions.Dockerfile"
-}
+
 
 # Runs `flyline --help` inside an interactive bash session, strips ANSI codes,
 # and outputs flyline_help.txt to the project root.

@@ -1,19 +1,31 @@
+#[cfg(not(test))]
 use crate::bash_symbols;
+#[cfg(not(test))]
 use crate::bash_symbols::ShellVar;
 
 use anyhow::Result;
 
-use libc::{c_char, c_int};
+#[cfg(not(test))]
+use libc::c_char;
+use libc::c_int;
 use lscolors::LsColors;
 use std::collections::HashMap;
+#[cfg(not(test))]
 use std::collections::HashSet;
+#[cfg(not(test))]
 use std::io::Read;
+#[cfg(not(test))]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(not(test))]
 use std::os::unix::io::FromRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(test))]
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
+#[cfg(not(test))]
 use std::time::SystemTime;
 
+#[cfg(not(test))]
 fn with_redirected_stdout<F, R>(func: F) -> (R, String)
 where
     F: FnOnce() -> R,
@@ -79,6 +91,7 @@ impl CommandType {
     }
 }
 
+#[cfg(not(test))]
 pub fn find_alias(cmd: &str) -> Option<String> {
     unsafe {
         let alias_ptr =
@@ -95,6 +108,14 @@ pub fn find_alias(cmd: &str) -> Option<String> {
     None
 }
 
+#[cfg(test)]
+pub fn find_alias(cmd: &str) -> Option<String> {
+    test_fixtures::test_aliases()
+        .iter()
+        .find_map(|(name, value)| (*name == cmd).then(|| (*value).to_string()))
+}
+
+#[cfg(not(test))]
 fn get_command_type_uncached(cmd: &str) -> (CommandType, String) {
     // If the command word looks like a filename (contains '/' or starts with
     // '~'), expand it first so that tilde and variable expansion are resolved
@@ -171,6 +192,7 @@ fn get_command_type_uncached(cmd: &str) -> (CommandType, String) {
 
 static CALL_TYPE_CACHE: Mutex<Option<HashMap<String, (CommandType, String)>>> = Mutex::new(None);
 
+#[cfg(not(test))]
 pub fn get_command_info(cmd: &str) -> (CommandType, String) {
     let mut cache_guard = CALL_TYPE_CACHE.lock().unwrap();
     let cache = cache_guard.get_or_insert_with(HashMap::new);
@@ -184,6 +206,25 @@ pub fn get_command_info(cmd: &str) -> (CommandType, String) {
     }
 }
 
+#[cfg(test)]
+pub fn get_command_info(cmd: &str) -> (CommandType, String) {
+    // The test environment models a tiny world: `git` is the only "real"
+    // executable on PATH, so it gets reported as a File at /usr/bin/git.
+    // Everything else is unknown — tests that need additional command types
+    // can extend this match arm.
+    if cmd == "git" {
+        return (CommandType::File, "file: /usr/bin/git".to_string());
+    }
+    if test_fixtures::test_aliases()
+        .iter()
+        .any(|(name, _)| *name == cmd)
+    {
+        return (CommandType::Alias, format!("alias: {cmd}"));
+    }
+    (CommandType::Unknown, "unknown".to_string())
+}
+
+#[cfg(not(test))]
 pub fn format_shell_var_uncached(name: &str) -> String {
     get_shell_var(name)
         .and_then(|mut var| {
@@ -208,6 +249,7 @@ pub fn format_shell_var_uncached(name: &str) -> String {
 
 static SHELL_VAR_CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
+#[cfg(not(test))]
 pub fn format_shell_var(name: &str) -> String {
     let mut cache_guard = SHELL_VAR_CACHE.lock().unwrap();
     let cache = cache_guard.get_or_insert_with(HashMap::new);
@@ -219,6 +261,11 @@ pub fn format_shell_var(name: &str) -> String {
         cache.insert(name.to_string(), result.clone());
         result
     }
+}
+
+#[cfg(test)]
+pub fn format_shell_var(name: &str) -> String {
+    format!("${}=", name)
 }
 
 pub fn reset_caches() {
@@ -234,6 +281,7 @@ pub fn reset_caches() {
     *DEFINED_BUILTINS.lock().unwrap() = None;
 }
 
+#[cfg(not(test))]
 pub fn get_all_aliases() -> Vec<String> {
     // TODO can we extract more info here?
     let mut aliases = Vec::new();
@@ -264,6 +312,14 @@ pub fn get_all_aliases() -> Vec<String> {
     aliases
 }
 
+#[cfg(test)]
+pub fn get_all_aliases() -> Vec<String> {
+    test_fixtures::test_aliases()
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect()
+}
+
 pub fn get_all_reserved_words() -> Vec<String> {
     vec![
         "if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until",
@@ -274,6 +330,7 @@ pub fn get_all_reserved_words() -> Vec<String> {
     .collect()
 }
 
+#[cfg(not(test))]
 pub fn get_all_variables_with_prefix(prefix: &str) -> Vec<String> {
     let mut variables = Vec::new();
     let prefix_c_str = std::ffi::CString::new(prefix.strip_prefix('$').unwrap_or(prefix)).unwrap();
@@ -302,6 +359,21 @@ pub fn get_all_variables_with_prefix(prefix: &str) -> Vec<String> {
     variables
 }
 
+#[cfg(test)]
+pub fn get_all_variables_with_prefix(prefix: &str) -> Vec<String> {
+    let bare_prefix = prefix.strip_prefix('$').unwrap_or(prefix);
+    let mut variables: Vec<String> = test_fixtures::test_env_vars()
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with(bare_prefix))
+        .map(|name| format!("${}", name))
+        .collect();
+    variables.sort();
+    variables.dedup();
+    variables
+}
+
+#[cfg(not(test))]
 pub fn get_all_shell_functions() -> Vec<String> {
     let mut functions = Vec::new();
 
@@ -332,6 +404,12 @@ pub fn get_all_shell_functions() -> Vec<String> {
     functions
 }
 
+#[cfg(test)]
+pub fn get_all_shell_functions() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(not(test))]
 pub fn get_all_shell_builtins() -> Vec<String> {
     let mut builtins = Vec::new();
 
@@ -483,6 +561,7 @@ impl ProgrammableCompleteReturn {
     }
 }
 
+#[cfg(not(test))]
 fn vec_of_strings_from_char_char_ptr(ptr: *mut *mut c_char) -> Vec<String> {
     let mut strings = Vec::new();
     let mut seen = HashSet::new();
@@ -507,6 +586,7 @@ fn vec_of_strings_from_char_char_ptr(ptr: *mut *mut c_char) -> Vec<String> {
     strings
 }
 
+#[cfg(not(test))]
 pub fn run_programmable_completions(
     full_command: &str,                // "git commi asdf" with cursor just after com
     command_word: &str,                // "git"
@@ -615,6 +695,39 @@ pub fn run_programmable_completions(
     }
 }
 
+#[cfg(test)]
+pub fn run_programmable_completions(
+    full_command: &str,
+    command_word: &str,
+    word_under_cursor: &str,
+    _cursor_byte_pos: usize,
+    _word_under_cursor_byte_end: usize,
+) -> Result<ProgrammableCompleteReturn> {
+    log::debug!(
+        "[test] run_programmable_completions: full_command='{}', command_word='{}', word_under_cursor='{}'",
+        full_command,
+        command_word,
+        word_under_cursor
+    );
+
+    if command_word != "git" {
+        return Ok(ProgrammableCompleteReturn::new(
+            Vec::new(),
+            CompletionFlags::default(),
+        ));
+    }
+
+    let candidates = test_fixtures::dummy_git_completions(full_command, word_under_cursor);
+    let completions: Vec<String> = candidates
+        .into_iter()
+        .map(|c| c.get_value().to_string_lossy().to_string())
+        .collect();
+    let mut flags = CompletionFlags::default();
+    flags.quote_type = find_quote_type(word_under_cursor);
+    Ok(ProgrammableCompleteReturn::new(completions, flags))
+}
+
+#[cfg(not(test))]
 pub fn print_copt_flags(flag: c_int) {
     log::debug!("COMPSPEC options flags set for flag {}:", flag);
     let options: &[CompspecOption] = &[
@@ -639,6 +752,7 @@ pub fn print_copt_flags(flag: c_int) {
     }
 }
 
+#[cfg(not(test))]
 pub fn get_shell_var(var_name: &str) -> Option<ShellVar> {
     unsafe {
         let var_cstr = std::ffi::CString::new(var_name).unwrap();
@@ -650,10 +764,19 @@ pub fn get_shell_var(var_name: &str) -> Option<ShellVar> {
     }
 }
 
+#[cfg(not(test))]
 pub fn get_envvar_value(var_name: &str) -> Option<String> {
     get_shell_var(var_name).and_then(|var| var.get_value())
 }
 
+#[cfg(test)]
+pub fn get_envvar_value(var_name: &str) -> Option<String> {
+    test_fixtures::test_env_vars()
+        .into_iter()
+        .find_map(|(name, value)| (name == var_name).then_some(value))
+}
+
+#[cfg(not(test))]
 pub fn get_hostname() -> String {
     unsafe {
         let ptr = bash_symbols::current_host_name;
@@ -665,6 +788,12 @@ pub fn get_hostname() -> String {
     }
 }
 
+#[cfg(test)]
+pub fn get_hostname() -> String {
+    "test-host".to_string()
+}
+
+#[cfg(not(test))]
 pub fn get_cwd() -> String {
     unsafe {
         let ptr = bash_symbols::get_working_directory(c"flyline".as_ptr());
@@ -676,6 +805,14 @@ pub fn get_cwd() -> String {
     }
 }
 
+#[cfg(test)]
+pub fn get_cwd() -> String {
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+#[cfg(not(test))]
 pub fn expand_filename(filename: &str) -> String {
     unsafe {
         let expanded_string = bash_symbols::expand_string_to_string(
@@ -694,6 +831,49 @@ pub fn expand_filename(filename: &str) -> String {
             .map(|s| s.to_string())
             .unwrap_or_else(|| filename.to_string())
     }
+}
+
+/// Test-only filename expansion. Supports a tiny subset of bash expansion:
+///   * `$PWD` / `$HOME` (and a leading `~/`) are expanded by looking the
+///     name up in [`test_fixtures::test_env_vars`].
+///   * `./` and `../` are left in place (resolved by the OS as relative paths)
+///
+/// Panics if the resulting path does not exist on disk after expansion. This
+/// catches mistakes in test fixtures and matches the user's request to keep
+/// expansion deterministic.
+#[cfg(test)]
+pub fn expand_filename(filename: &str) -> String {
+    if filename.is_empty() {
+        return String::new();
+    }
+
+    let home = get_envvar_value("HOME").unwrap_or_default();
+
+    // Tilde expansion: leading `~/` only (we don't try to support `~user`).
+    let mut expanded = if let Some(rest) = filename.strip_prefix("~/") {
+        format!("{}/{}", home, rest)
+    } else if filename == "~" {
+        home.clone()
+    } else {
+        filename.to_string()
+    };
+
+    // Expand every variable known to the test fixture (both `$NAME` and
+    // `${NAME}` forms). The set is small and fixed, so a linear pass is fine.
+    for (name, value) in test_fixtures::test_env_vars() {
+        let braced = format!("${{{name}}}");
+        let unbraced = format!("${name}");
+        expanded = expanded.replace(&braced, &value).replace(&unbraced, &value);
+    }
+
+    if !Path::new(&expanded).exists() {
+        panic!(
+            "[test] expand_filename: expanded path does not exist: input={:?} expanded={:?}",
+            filename, expanded
+        );
+    }
+
+    expanded
 }
 
 pub fn fully_expand_path(p: &str) -> String {
@@ -763,6 +943,7 @@ quote_word_break_chars on the result.  This returns newly-allocated
 memory. */
 // static char * bash_quote_filename (char *s, int rtype, char *qcp)
 // TODO: handle edge cases that bash_quote_filename handles
+#[cfg(not(test))]
 extern "C" fn quoting_function_c(
     s: *const c_char,
     _rtype: c_int,
@@ -843,6 +1024,7 @@ const BACKSLASH_SPECIAL_CHARS: &[char] = &[
 quotes, and backslashes).  It allows single quotes to appear
 within double quotes, and vice versa.  It should be smarter. */
 // static char *bash_dequote_filename (char *text, int quote_char)
+#[cfg(not(test))]
 extern "C" fn dequoting_function_c(s: *const c_char, _quote_char: c_int) -> *mut c_char {
     let s_str = unsafe { std::ffi::CStr::from_ptr(s).to_string_lossy().into_owned() };
     let dequoted = dequoting_function_rust(&s_str);
@@ -936,21 +1118,25 @@ static DEFINED_RESERVED_WORDS: Mutex<Option<Vec<String>>> = Mutex::new(None);
 static DEFINED_SHELL_FUNCTIONS: Mutex<Option<Vec<String>>> = Mutex::new(None);
 static DEFINED_BUILTINS: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
+#[cfg(not(test))]
 fn get_cached_aliases() -> Vec<String> {
     let mut guard = DEFINED_ALIASES.lock().unwrap();
     guard.get_or_insert_with(get_all_aliases).clone()
 }
 
+#[cfg(not(test))]
 fn get_cached_reserved_words() -> Vec<String> {
     let mut guard = DEFINED_RESERVED_WORDS.lock().unwrap();
     guard.get_or_insert_with(get_all_reserved_words).clone()
 }
 
+#[cfg(not(test))]
 fn get_cached_shell_functions() -> Vec<String> {
     let mut guard = DEFINED_SHELL_FUNCTIONS.lock().unwrap();
     guard.get_or_insert_with(get_all_shell_functions).clone()
 }
 
+#[cfg(not(test))]
 fn get_cached_builtins() -> Vec<String> {
     let mut guard = DEFINED_BUILTINS.lock().unwrap();
     guard.get_or_insert_with(get_all_shell_builtins).clone()
@@ -958,6 +1144,7 @@ fn get_cached_builtins() -> Vec<String> {
 
 /// Per-directory executable cache entry: the directory's last-modified time and
 /// the list of executable filenames found in that directory.
+#[cfg(not(test))]
 struct DirExecutables {
     mtime: SystemTime,
     names: Vec<String>,
@@ -971,10 +1158,12 @@ struct DirExecutables {
 /// 2. Newly-added directories are scanned and inserted.
 /// 3. For each remaining directory the last-modified time is compared to the
 ///    cached value; if it has changed the directory is re-scanned.
+#[cfg(not(test))]
 struct ExecutablesOnPath {
     cache: HashMap<PathBuf, DirExecutables>,
 }
 
+#[cfg(not(test))]
 impl ExecutablesOnPath {
     fn new() -> Self {
         Self {
@@ -1048,6 +1237,7 @@ impl ExecutablesOnPath {
     }
 }
 
+#[cfg(not(test))]
 static EXECUTABLES_ON_PATH: LazyLock<Mutex<ExecutablesOnPath>> =
     LazyLock::new(|| Mutex::new(ExecutablesOnPath::new()));
 
@@ -1055,6 +1245,7 @@ pub(crate) static LS_COLORS: LazyLock<Option<LsColors>> =
     LazyLock::new(|| get_envvar_value("LS_COLORS").map(|s| LsColors::from_string(&s)));
 
 /// Get all potential first word completions (aliases, reserved words, functions, builtins, executables)
+#[cfg(not(test))]
 pub fn get_possible_command_words() -> impl Iterator<Item = String> {
     let aliases = get_cached_aliases();
     let reserved_words = get_cached_reserved_words();
@@ -1073,10 +1264,22 @@ pub fn get_possible_command_words() -> impl Iterator<Item = String> {
         .chain(executables)
 }
 
+#[cfg(test)]
+pub fn get_possible_command_words() -> impl Iterator<Item = String> {
+    get_all_reserved_words().into_iter()
+}
+
+#[cfg(not(test))]
 pub fn read_terminating_signal() -> c_int {
     unsafe { (&raw const crate::bash_symbols::terminating_signal).read_volatile() }
 }
 
+#[cfg(test)]
+pub fn read_terminating_signal() -> c_int {
+    0
+}
+
+#[cfg(not(test))]
 pub fn set_env_var(name: &str, value: &str) -> Result<()> {
     unsafe {
         let name_cstr = std::ffi::CString::new(name)?;
@@ -1092,6 +1295,15 @@ pub fn set_env_var(name: &str, value: &str) -> Result<()> {
     }
 }
 
+#[cfg(test)]
+pub fn set_env_var(name: &str, value: &str) -> Result<()> {
+    // SAFETY: Tests that mutate process env vars run inside `rusty_fork_test!`
+    // forked subprocesses, so the mutation cannot race with other threads.
+    unsafe { std::env::set_var(name, value) };
+    Ok(())
+}
+
+#[cfg(not(test))]
 pub fn unset_env_var(name: &str) -> Result<()> {
     unsafe {
         let name_cstr = std::ffi::CString::new(name)?;
@@ -1104,6 +1316,13 @@ pub fn unset_env_var(name: &str) -> Result<()> {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+pub fn unset_env_var(name: &str) -> Result<()> {
+    // SAFETY: see set_env_var.
+    unsafe { std::env::remove_var(name) };
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1191,5 +1410,146 @@ mod tests {
         assert_eq!(find_quote_type(r#"qwe\ asdf"#), Some(QuoteType::Backslash));
         assert_eq!(find_quote_type(r#"qwe asdf"#), None);
         assert_eq!(find_quote_type(r#"qwe\\asdf"#), None);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test fixtures
+// ---------------------------------------------------------------------------
+//
+// Hardcoded data used to back the `#[cfg(test)]` versions of bash_funcs.
+// Centralising these keeps the various test stubs consistent — for example
+// `find_alias` and `get_all_aliases` both read from the same alias table,
+// and every test stub that needs to look up an environment variable goes
+// through `test_env_vars` so the only non-fixed value in the test
+// environment is the current working directory (returned for `$PWD`).
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    use clap::{CommandFactory, Parser, Subcommand};
+
+    /// Aliases visible to the test build of flyline. Shared between
+    /// `find_alias` and `get_all_aliases` so the two stay in sync.
+    pub(crate) fn test_aliases() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("gst", "git status"),
+            ("gcm", "git commit -m"),
+            ("gd", "git diff"),
+        ]
+    }
+
+    /// Hardcoded set of environment variables visible to test code. The
+    /// only non-fixed value is `PWD`, which is sourced from the process
+    /// current working directory; everything else is a fixed string. All
+    /// `#[cfg(test)]` bash_funcs that need an env var look it up here so
+    /// tests never observe variables that happen to be set by `cargo
+    /// test`'s parent shell.
+    pub(crate) fn test_env_vars() -> Vec<(String, String)> {
+        let pwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        vec![
+            ("HOME".to_string(), "/home/john".to_string()),
+            ("PWD".to_string(), pwd),
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ("SHELL".to_string(), "/bin/bash".to_string()),
+            ("TERM".to_string(), "xterm-256color".to_string()),
+            ("USER".to_string(), "john".to_string()),
+        ]
+    }
+
+    /// Tiny clap definition used to drive the test build of
+    /// `run_programmable_completions`. It only implements `add`, `commit`,
+    /// `diff`, and `status` with at most four flags each, but that is
+    /// enough to exercise flyline's programmable-completion plumbing
+    /// without needing a real bash instance.
+    #[derive(Parser, Debug)]
+    #[command(name = "git", no_binary_name = true)]
+    struct DummyGitArgs {
+        #[command(subcommand)]
+        command: Option<DummyGitCommand>,
+    }
+
+    #[derive(Subcommand, Debug)]
+    enum DummyGitCommand {
+        Add {
+            #[arg(long = "all", short = 'A')]
+            all: bool,
+            #[arg(long = "patch", short = 'p')]
+            patch: bool,
+            #[arg(long = "verbose", short = 'v')]
+            verbose: bool,
+            #[arg(long = "dry-run", short = 'n')]
+            dry_run: bool,
+            files: Vec<String>,
+        },
+        Commit {
+            #[arg(long = "message", short = 'm')]
+            message: Option<String>,
+            #[arg(long = "amend")]
+            amend: bool,
+            #[arg(long = "all", short = 'a')]
+            all: bool,
+            #[arg(long = "no-verify")]
+            no_verify: bool,
+        },
+        Diff {
+            #[arg(long = "staged")]
+            staged: bool,
+            #[arg(long = "stat")]
+            stat: bool,
+            #[arg(long = "name-only")]
+            name_only: bool,
+            #[arg(long = "color")]
+            color: bool,
+            paths: Vec<String>,
+        },
+        Status {
+            #[arg(long = "short", short = 's')]
+            short: bool,
+            #[arg(long = "branch", short = 'b')]
+            branch: bool,
+            #[arg(long = "porcelain")]
+            porcelain: bool,
+            #[arg(long = "untracked-files", short = 'u')]
+            untracked_files: bool,
+        },
+    }
+
+    pub(crate) fn dummy_git_completions(
+        full_command: &str,
+        word_under_cursor: &str,
+    ) -> Vec<clap_complete::CompletionCandidate> {
+        // Tokenize on whitespace; this is a deliberate simplification
+        // suitable for the dummy git completer used in unit tests.
+        let mut tokens: Vec<String> = full_command
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+        // Drop the leading "git" command word; the dummy parser uses
+        // `no_binary_name = true`.
+        if tokens.first().map(String::as_str) == Some("git") {
+            tokens.remove(0);
+        }
+
+        // Determine if the cursor is at the end (i.e. completing a
+        // brand-new empty word) or replacing the last token.
+        let trailing_space = full_command.ends_with(char::is_whitespace);
+        if trailing_space || tokens.is_empty() || word_under_cursor.is_empty() {
+            tokens.push(String::new());
+        } else if tokens.last().map(String::as_str) != Some(word_under_cursor) {
+            // Replace whatever the last token is with the word under
+            // cursor so the clap completer treats it as the prefix.
+            let last = tokens.last_mut().unwrap();
+            *last = word_under_cursor.to_string();
+        }
+
+        let args_os: Vec<std::ffi::OsString> =
+            tokens.into_iter().map(std::ffi::OsString::from).collect();
+        let index = args_os.len() - 1;
+        let mut cmd = DummyGitArgs::command();
+        let current_dir = std::env::current_dir().ok();
+
+        clap_complete::engine::complete(&mut cmd, args_os, index, current_dir.as_deref())
+            .unwrap_or_default()
     }
 }

@@ -96,10 +96,6 @@ struct FlylineArgs {
     /// disable it on terminals that misbehave when the request is sent.
     #[arg(long = "enable-extended-key-codes", default_missing_value = "true", num_args = 0..=1)]
     enable_extended_key_codes: Option<bool>,
-    // Only for integration tests
-    #[cfg(feature = "integration-tests")]
-    #[arg(long = "run-tab-completion-tests")]
-    run_tab_completion_tests: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -1329,17 +1325,6 @@ impl Flyline {
                             self.settings.cursor_config.effect_easing = easing;
                         }
                     }
-                }
-
-                #[cfg(feature = "integration-tests")]
-                if parsed.run_tab_completion_tests {
-                    use crate::app;
-                    self.settings.run_tab_completion_tests = true;
-                    println!("Running tab completion tests...");
-                    let prev_sigchld = unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) };
-                    app::get_command(&mut self.settings);
-                    unsafe { libc::signal(libc::SIGCHLD, prev_sigchld) };
-                    println!("Finished running tab completion tests.");
                 }
 
                 bash_symbols::BuiltinExitCode::ExecutionSuccess as c_int

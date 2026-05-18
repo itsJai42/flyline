@@ -26,11 +26,16 @@ Sleep 800ms
 
 Type `echo "`
 Delete
+Sleep 200ms
 Enter
+Sleep 200ms
 Enter
+Sleep 200ms
 Enter
+Sleep 200ms
 Type `No other process is drawing this; it is all happening inside of Bash!`
 Enter
+Sleep 200ms
 Enter
 Type `"`
 Sleep 2000ms

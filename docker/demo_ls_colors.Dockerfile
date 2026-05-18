@@ -5,7 +5,17 @@ FROM demo-base AS gif-builder
 RUN mkdir -p /home/john/demo_ls/archive /home/john/demo_ls/projects && \
     touch /home/john/demo_ls/config.json /home/john/demo_ls/notes.txt && \
     ln -s /home/john/demo_ls/archive /home/john/demo_ls/workspace && \
-    ln -s /nonexistent_target /home/john/demo_ls/old_data
+        ln -s /nonexistent_target /home/john/demo_ls/old_data && \
+        touch -d '2026-02-23 21:14:54 UTC' \
+            /home/john/demo_ls \
+            /home/john/demo_ls/archive \
+            /home/john/demo_ls/projects && \
+        touch -d '2026-02-23 17:24:54 UTC' \
+            /home/john/demo_ls/config.json \
+            /home/john/demo_ls/notes.txt && \
+        touch -h -d '2026-02-23 18:24:54 UTC' \
+            /home/john/demo_ls/workspace \
+            /home/john/demo_ls/old_data
 
 # Configure LS_COLORS, add file completion for 'foo', and cd into the demo dir
 RUN printf '%s\n' \

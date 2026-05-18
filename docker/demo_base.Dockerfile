@@ -28,7 +28,10 @@ USER john
 # Ensure build-time RUN steps (non-interactive shells) can resolve demo helper binaries.
 ENV PATH="/home/john/bin:${PATH}"
 
-RUN sh -c '/usr/bin/curl -sSfL https://raw.githubusercontent.com/HalFrgrd/evp/master/install.sh | EVP_VERSION=v0.4.0 EVP_INSTALL_DIR=/home/john/bin sh'
+ENV EVP_VERSION=v0.5.0
+ENV EVP_INSTALL_DIR=/home/john/bin
+RUN sh -c '/usr/bin/curl -sSfL https://raw.githubusercontent.com/HalFrgrd/evp/master/install.sh | sh'
+# COPY ./evp /home/john/bin/
 
 RUN touch /home/john/.bashrc && \
     printf '%s\n' \

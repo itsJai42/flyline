@@ -949,10 +949,10 @@ Options:
       --matrix-animation [<MATRIX_ANIMATION>]
           Run matrix animation in the terminal background. Use `on` to always show it, `off` to disable it, or an integer number of seconds to show it after that many seconds of inactivity (no keypress or mouse event). Defaults to `off`; passing the flag without a value is equivalent to `on`
 
-      --frame-rate <FPS>
+      --set-frame-rate <FPS>
           Render frame rate in frames per second (1–120, default 24)
 
-      --mouse-mode <MODE>
+      --set-mouse-mode <MODE>
           Mouse capture mode (disabled, simple, smart). Default is smart.
 
       --send-shell-integration-codes [<SEND_SHELL_INTEGRATION_CODES>]
@@ -1016,8 +1016,8 @@ Read more at https://github.com/HalFrgrd/flyline
             "--run-tutorial should be a subcommand now"
         );
         assert!(longs.contains(&"--log-level"));
-        assert!(longs.contains(&"--frame-rate"));
-        assert!(longs.contains(&"--mouse-mode"));
+        assert!(longs.contains(&"--set-frame-rate"));
+        assert!(longs.contains(&"--set-mouse-mode"));
         assert!(longs.contains(&"--help"));
         let shorts = short_names(&cmd);
         assert!(shorts.contains(&"-h"));
@@ -1028,11 +1028,11 @@ Read more at https://github.com/HalFrgrd/flyline
             Some("LEVEL")
         );
         assert_eq!(
-            arg_by_long(&cmd, "--frame-rate").and_then(|a| a.value_type.as_deref()),
+            arg_by_long(&cmd, "--set-frame-rate").and_then(|a| a.value_type.as_deref()),
             Some("FPS")
         );
         assert_eq!(
-            arg_by_long(&cmd, "--mouse-mode").and_then(|a| a.value_type.as_deref()),
+            arg_by_long(&cmd, "--set-mouse-mode").and_then(|a| a.value_type.as_deref()),
             Some("MODE")
         );
 

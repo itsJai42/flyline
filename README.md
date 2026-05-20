@@ -407,6 +407,8 @@ Flyline offers a fuzzy history search similar to fzf or skim accessed with `Ctrl
 **Inline suggestions:**
 Inline suggestions appear as you type based on the most recent matching history entry. Accept them by moving your cursor to the end of the line and pressing `Right`/`End`.
 
+[![Inline history demo](https://github.com/HalFrgrd/flyline/releases/download/assets/demo_inline_history.gif)](https://github.com/HalFrgrd/evp)
+
 **Scroll through prefix matches:**
 Pressing `Up` will scroll through history entries that are a prefix match with the current command.
 

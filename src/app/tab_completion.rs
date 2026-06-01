@@ -1348,6 +1348,36 @@ mod tab_completion_tests {
             assert_eq!(builder.processed[0].s, "sym_link_to_foo/");
         }
 
+        #[test]
+        fn docker_completions_with_inline_descriptions() {
+            cd_to_example_fs();
+            let actual = run_completion("docker p");
+
+            assert_eq!(actual.len(), 2);
+
+            let port_sug = actual.iter().find(|s| s.s == "port").unwrap();
+            let ps_sug = actual.iter().find(|s| s.s == "ps").unwrap();
+
+            assert_eq!(port_sug.s, "port");
+            assert_eq!(ps_sug.s, "ps");
+
+            if let SuggestionDescription::Animation(ref frames) = port_sug.description {
+                assert_eq!(frames.len(), 1);
+                let text: String = frames[0].iter().map(|span| span.content.as_ref()).collect();
+                assert_eq!(text, "List port mappings or a specific mapping for the container");
+            } else {
+                panic!("Expected Animation description for port, got {:?}", port_sug.description);
+            }
+
+            if let SuggestionDescription::Animation(ref frames) = ps_sug.description {
+                assert_eq!(frames.len(), 1);
+                let text: String = frames[0].iter().map(|span| span.content.as_ref()).collect();
+                assert_eq!(text, "List containers");
+            } else {
+                panic!("Expected Animation description for ps, got {:?}", ps_sug.description);
+            }
+        }
+
         // ------- alias expansion (find_alias / get_all_aliases) ----------
 
         #[test]

@@ -543,8 +543,87 @@ impl std::fmt::Debug for ProgrammableCompleteReturn {
     }
 }
 
+fn is_strict_completion_value(val: &str) -> bool {
+    if val.is_empty() {
+        return false;
+    }
+    let first = val.chars().next().unwrap();
+    if !first.is_ascii_alphanumeric() && first != '-' {
+        return false;
+    }
+    val.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || c == '-'
+            || c == '_'
+            || c == ':'
+            || c == '.'
+            || c == '/'
+            || c == '@'
+    })
+}
+
+fn analyze_candidate(s: &str) -> Option<(&str, &str, usize)> {
+    if s.contains('\t') {
+        return None;
+    }
+    if let Some(pos) = s.find("  ") {
+        let value = &s[..pos];
+        let rest = &s[pos..];
+        let description = rest.trim_start();
+        let desc_start_index = s.len() - rest.len() + (rest.len() - description.len());
+
+        if is_strict_completion_value(value) && !description.is_empty() {
+            return Some((value, description, desc_start_index));
+        }
+    }
+    None
+}
+
+/// Some completion scripts like gh or docker put descriptions inline with
+/// the suggestion when there are multiple suggestions.
+/// So here I convert those to the format "suggestion<TAB>description" so that
+/// flyline can show the description in a separate column.
+fn detect_and_convert_inline_descriptions(completions: &mut Vec<String>, flags: &CompletionFlags) {
+    if flags.filename_completion_desired {
+        return;
+    }
+
+    let mut detected = false;
+
+    if completions.len() == 1 {
+        if let Some((value, description, _)) = analyze_candidate(&completions[0]) {
+            if description.contains(' ') || value.starts_with('-') {
+                detected = true;
+            }
+        }
+    } else if completions.len() > 1 {
+        let mut desc_columns = std::collections::HashMap::new();
+
+        for s in completions.iter() {
+            if let Some((_, _, col)) = analyze_candidate(s) {
+                *desc_columns.entry(col).or_insert(0) += 1;
+            }
+        }
+
+        let has_aligned = desc_columns.values().any(|&count| count >= 2);
+
+        if has_aligned {
+            detected = true;
+        }
+    }
+
+    if detected {
+        for s in completions.iter_mut() {
+            if let Some((value, description, _)) = analyze_candidate(s) {
+                *s = format!("{}\t{}", value, description);
+            }
+        }
+    }
+}
+
 impl ProgrammableCompleteReturn {
-    pub fn new(completions: Vec<String>, flags: CompletionFlags) -> Self {
+    pub fn new(mut completions: Vec<String>, flags: CompletionFlags) -> Self {
+        detect_and_convert_inline_descriptions(&mut completions, &flags);
         Self { completions, flags }
     }
 
@@ -719,6 +798,28 @@ pub fn run_programmable_completions(
         let mut flags = CompletionFlags::default();
         flags.quote_type = find_quote_type(word_under_cursor);
         Ok(ProgrammableCompleteReturn::new(completions, flags))
+    } else if command_word == "docker" {
+        let completions = if word_under_cursor.starts_with('p') {
+            vec![
+                "port      List port mappings or a specific mapping for the container".to_string(),
+                "ps        List containers".to_string(),
+            ]
+        } else {
+            vec![
+                "builder   Manage builds".to_string(),
+                "image     Manage images".to_string(),
+                "port      List port mappings or a specific mapping for the container".to_string(),
+                "ps        List containers".to_string(),
+                "run       Run a command in a new container".to_string(),
+            ]
+        };
+        let filtered: Vec<String> = completions
+            .into_iter()
+            .filter(|s| s.starts_with(word_under_cursor))
+            .collect();
+        let mut flags = CompletionFlags::default();
+        flags.quote_type = find_quote_type(word_under_cursor);
+        Ok(ProgrammableCompleteReturn::new(filtered, flags))
     } else if command_word == "cat" {
         // do a naive filessytem glob.
         // bash sometimes does this if nothing is returned by the prog comp spec.
@@ -1452,6 +1553,69 @@ mod tests {
         assert_eq!(find_quote_type(r#"qwe\ asdf"#), Some(QuoteType::Backslash));
         assert_eq!(find_quote_type(r#"qwe asdf"#), None);
         assert_eq!(find_quote_type(r#"qwe\\asdf"#), None);
+    }
+
+    #[test]
+    fn test_detect_and_convert_inline_descriptions() {
+        let mut flags = CompletionFlags::default();
+        flags.filename_completion_desired = false;
+
+        // 1. A typical aligned list of options with descriptions.
+        let mut comps = vec![
+            "port      List port mappings".to_string(),
+            "ps        List containers".to_string(),
+        ];
+        detect_and_convert_inline_descriptions(&mut comps, &flags);
+        assert_eq!(comps[0], "port\tList port mappings");
+        assert_eq!(comps[1], "ps\tList containers");
+
+        // 2. An aligned list of options where some descriptions are single words.
+        let mut comps = vec![
+            "-d      Decompress".to_string(),
+            "-z      Compress".to_string(),
+        ];
+        detect_and_convert_inline_descriptions(&mut comps, &flags);
+        assert_eq!(comps[0], "-d\tDecompress");
+        assert_eq!(comps[1], "-z\tCompress");
+
+        // 3. A single option with a description (containing a space).
+        let mut comps = vec!["port      List port mappings".to_string()];
+        detect_and_convert_inline_descriptions(&mut comps, &flags);
+        assert_eq!(comps[0], "port\tList port mappings");
+
+        // 4. A single option with a single-word description starting with a flag.
+        let mut comps = vec!["-d      Decompress".to_string()];
+        detect_and_convert_inline_descriptions(&mut comps, &flags);
+        assert_eq!(comps[0], "-d\tDecompress");
+
+        // 5. A single option with a single-word description (not a flag).
+        // Should NOT convert to avoid false positives (e.g. "my  file.txt" or "build  Build" when it is the only completion).
+        let mut comps = vec!["build      Build".to_string()];
+        detect_and_convert_inline_descriptions(&mut comps, &flags);
+        assert_eq!(comps[0], "build      Build");
+
+        // 6. Filename completion desired - should skip.
+        let mut comps = vec![
+            "port      List port mappings".to_string(),
+            "ps        List containers".to_string(),
+        ];
+        let mut file_flags = CompletionFlags::default();
+        file_flags.filename_completion_desired = true;
+        detect_and_convert_inline_descriptions(&mut comps, &file_flags);
+        assert_eq!(comps[0], "port      List port mappings");
+
+        // 7. Non-aligned filenames (different lengths, double spaces).
+        // Should NOT convert.
+        let mut comps = vec!["my  file.txt".to_string(), "another  file.txt".to_string()];
+        detect_and_convert_inline_descriptions(&mut comps, &flags);
+        assert_eq!(comps[0], "my  file.txt");
+        assert_eq!(comps[1], "another  file.txt");
+
+        // 8. Arbitrary string with spaces in the value part (e.g. "my file      description").
+        // Value part contains spaces, so it's not a strict completion value, should NOT convert.
+        let mut comps = vec!["my file      description".to_string()];
+        detect_and_convert_inline_descriptions(&mut comps, &flags);
+        assert_eq!(comps[0], "my file      description");
     }
 }
 

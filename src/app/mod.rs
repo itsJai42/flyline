@@ -37,8 +37,6 @@ use std::cell::LazyCell;
 use std::io::{Error, ErrorKind, IsTerminal};
 use std::time::Duration;
 use std::vec;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 /// After this duration of inactivity the frame rate drops to 0.2 fps and the
 /// cursor is rendered in the unfocused (dim, non-animated) state.
@@ -1560,7 +1558,8 @@ impl<'a> App<'a> {
     /// Returns one `Line` per terminal row. The first line combines the
     /// header prefix (index / score / timeago / indicator) with the first
     /// command row; subsequent lines carry the continuation prefix.
-    fn get_lines_for_history_entry(
+    fn render_history_entry(
+        content: &mut Contents,
         formatted_entry: &HistoryEntryFormatted,
         entries: &[HistoryEntry],
         entry_idx: usize,
@@ -1570,8 +1569,9 @@ impl<'a> App<'a> {
         header_prefix_width: usize,
         available_cols: u16,
         palette: &Palette,
-    ) -> Vec<Line<'static>> {
+    ) {
         let is_selected = fuzzy_search_index == entry_idx;
+        let tag = Tag::HistoryResult(entry_idx);
 
         let entry = &entries[formatted_entry.entry_index];
         let timeago_str = entry
@@ -1593,114 +1593,115 @@ impl<'a> App<'a> {
         };
 
         let formatted_text = formatted_entry.command_spans(entries, palette);
-
-        let total_logical_lines = formatted_text.len();
-        let mut all_display_rows: Vec<(bool, usize, Line<'static>)> = vec![];
-        for (logical_idx, logical_line) in formatted_text.iter().enumerate() {
-            let terminal_rows = split_line_to_terminal_rows(logical_line, available_cols);
-            for (sub_idx, terminal_row) in terminal_rows.into_iter().enumerate() {
-                all_display_rows.push((sub_idx == 0, logical_idx, terminal_row));
-            }
-        }
-
-        let total_display_rows = all_display_rows.len();
         let max_display_rows = if is_selected { 4 } else { 1 };
-        let has_more = total_display_rows > max_display_rows;
-        let rows_to_show = total_display_rows.min(max_display_rows);
 
-        let mut result: Vec<Line<'static>> = Vec::with_capacity(rows_to_show);
+        let ellipsis_style = if is_selected {
+            Palette::convert_to_highlighted(palette.secondary_text())
+        } else {
+            palette.secondary_text()
+        };
 
-        for (display_idx, (is_start_of_logical, logical_idx, display_line)) in all_display_rows
-            .into_iter()
-            .take(max_display_rows)
-            .enumerate()
-        {
-            let mut row_spans: Vec<Span<'static>> = if display_idx == 0 {
-                vec![
-                    Span::styled(
-                        format!("{:>num_digits_for_index$} ", entry.index + 1),
-                        palette.secondary_text(),
-                    ),
-                    Span::styled(
-                        format!("{:>num_digits_for_score$} ", formatted_entry.score),
-                        palette.secondary_text(),
-                    ),
-                    Span::styled(timeago_str.clone(), palette.secondary_text()),
-                    indicator_span(),
-                ]
-            } else {
-                let indent_prefix = if is_start_of_logical {
-                    let line_num_str = format!("{}/{}", logical_idx + 1, total_logical_lines);
-                    format!("{:>width$}", line_num_str, width = header_prefix_width - 1)
-                } else {
-                    " ".repeat(header_prefix_width - 1)
-                };
-                vec![
-                    Span::styled(indent_prefix, palette.secondary_text()),
-                    indicator_span(),
-                ]
+        let start_row = content.cursor_position().row as usize;
+        let mut current_display_row = 0;
+        let mut truncated = false;
+        let mut last_content_end_col = header_prefix_width;
+
+        for (logical_idx, line) in formatted_text.iter().enumerate() {
+            if current_display_row >= max_display_rows {
+                truncated = true;
+                break;
+            }
+
+            content.newline();
+            let row_y = content.cursor_position().row as usize;
+
+            content.set_cursor_col(header_prefix_width as u16);
+
+            let remaining_rows = max_display_rows - current_display_row;
+            let rect = Rect {
+                x: header_prefix_width as u16,
+                y: row_y as u16,
+                width: available_cols,
+                height: remaining_rows as u16,
             };
 
-            let cmd_display_width: usize = display_line
-                .spans
-                .iter()
-                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
-                .sum();
-
-            let mut cmd_spans: Vec<Span<'static>> = display_line
-                .spans
-                .into_iter()
-                .map(|span| {
-                    if is_selected {
-                        Span::styled(span.content, Palette::convert_to_highlighted(span.style))
-                    } else {
-                        span
-                    }
-                })
-                .collect();
-
-            // Append ellipsis on the last displayed row when more content exists.
-            // If the command row fills available_cols, trim the last grapheme to
-            // make space; otherwise just append.
-            if display_idx + 1 == rows_to_show && has_more {
-                let ellipsis_style = if is_selected {
-                    Palette::convert_to_highlighted(palette.secondary_text())
-                } else {
-                    palette.secondary_text()
-                };
-                if cmd_display_width >= available_cols as usize {
-                    'trim: loop {
-                        match cmd_spans.last_mut() {
-                            None => break 'trim,
-                            Some(last) => {
-                                let s = last.content.as_ref();
-                                match s.grapheme_indices(true).next_back() {
-                                    None => {
-                                        cmd_spans.pop();
-                                    }
-                                    Some((byte_idx, _)) => {
-                                        let trimmed = s[..byte_idx].to_string();
-                                        let style = last.style;
-                                        if trimmed.is_empty() {
-                                            cmd_spans.pop();
-                                        } else {
-                                            *last = Span::styled(trimmed, style);
-                                        }
-                                        break 'trim;
-                                    }
-                                }
-                            }
-                        }
-                    }
+            for span in &line.spans {
+                let mut styled_span = span.clone();
+                if is_selected {
+                    styled_span.style = Palette::convert_to_highlighted(styled_span.style);
                 }
-                cmd_spans.push(Span::styled("…", ellipsis_style));
+                let tagged_span = TaggedSpan::new(styled_span, tag);
+                if !content.write_tagged_span_area(&tagged_span, rect) {
+                    truncated = true;
+                    break;
+                }
             }
 
-            row_spans.extend(cmd_spans);
-            result.push(Line::from(row_spans));
+            last_content_end_col = content.cursor_position().col as usize;
+
+            // Fill the rest of the logical line's final row with empty space
+            content.fill_line(tag);
+
+            let end_row = content.cursor_position().row as usize;
+            let logical_line_rows = end_row - row_y + 1;
+            current_display_row += logical_line_rows;
+
+            // Write prefixes for this logical line's rows (row_y..=end_row)
+            for r in row_y..=end_row {
+                let is_first_row_of_logical = r == row_y;
+
+                content.move_cursor_to(r as u16, 0);
+
+                if r == start_row + 1 {
+                    let prefix_spans = vec![
+                        Span::styled(
+                            format!("{:>num_digits_for_index$} ", entry.index + 1),
+                            palette.secondary_text(),
+                        ),
+                        Span::styled(
+                            format!("{:>num_digits_for_score$} ", formatted_entry.score),
+                            palette.secondary_text(),
+                        ),
+                        Span::styled(timeago_str.clone(), palette.secondary_text()),
+                        indicator_span(),
+                    ];
+                    for prefix_span in prefix_spans {
+                        content.write_tagged_span(&TaggedSpan::new(prefix_span, tag));
+                    }
+                } else {
+                    let indent_prefix = if is_first_row_of_logical {
+                        let line_num_str = format!("{}/{}", logical_idx + 1, formatted_text.len());
+                        format!("{:>width$}", line_num_str, width = header_prefix_width - 1)
+                    } else {
+                        " ".repeat(header_prefix_width - 1)
+                    };
+
+                    content.write_tagged_span(&TaggedSpan::new(
+                        Span::styled(indent_prefix, palette.secondary_text()),
+                        tag,
+                    ));
+                    content.write_tagged_span(&TaggedSpan::new(indicator_span(), tag));
+                }
+            }
+
+            // Restore cursor to the end of the written content to allow newline() to proceed correctly
+            content.move_cursor_to(end_row as u16, content.width);
+
+            if truncated {
+                break;
+            }
         }
 
-        result
+        let end_row = content.cursor_position().row as usize;
+
+        // Retroactive Ellipsis Pass
+        if truncated {
+            let last_col = last_content_end_col.min((content.width as usize).saturating_sub(1));
+            content.overwrite_with_char(end_row, last_col, "…", ellipsis_style, tag);
+        }
+
+        // Restore cursor position to the end of the written area
+        content.move_cursor_to(end_row as u16, content.width);
     }
 
     fn create_content(&mut self, width: u16, viewport_top: u16, terminal_height: u16) -> Contents {
@@ -1991,7 +1992,7 @@ impl<'a> App<'a> {
                     // reflects the actual cell the cursor grapheme will land
                     // on. This mirrors the skip done inside write_span_internal.
                     if let Some(g) = sub_span.styled_graphemes(sub_span.style).next() {
-                        content.move_to_next_insertion_point(&g, false);
+                        content.move_to_next_insertion_point(&g, false, None);
                     }
                     cursor_pos_maybe = Some(content.cursor_position());
                 }
@@ -2011,7 +2012,7 @@ impl<'a> App<'a> {
         }
         if self.formatted_buffer_cache.draw_cursor_at_end {
             let space = StyledGrapheme::new(" ", Style::default());
-            content.move_to_next_insertion_point(&space, false);
+            content.move_to_next_insertion_point(&space, false, None);
             cursor_pos_maybe = Some(content.cursor_position());
         }
 
@@ -2320,9 +2321,11 @@ impl<'a> App<'a> {
                     let entry_idx = formatted_entry.idx_in_cache.unwrap_or(0);
                     let is_selected = fuzzy_search_index == entry_idx;
                     if is_selected {
-                        content.set_focus_row(content.cursor_position().row);
+                        content.set_focus_row(content.cursor_position().row + 1);
                     }
-                    for line in Self::get_lines_for_history_entry(
+
+                    Self::render_history_entry(
+                        &mut content,
                         formatted_entry,
                         entries,
                         entry_idx,
@@ -2332,18 +2335,12 @@ impl<'a> App<'a> {
                         header_prefix_width,
                         available_cols,
                         &self.settings.colour_palette,
-                    ) {
-                        content.newline();
-                        content.write_tagged_line(
-                            &TaggedLine::from_line(line, Tag::HistoryResult(entry_idx)),
-                            false,
-                        );
-                        content.fill_line(Tag::HistoryResult(entry_idx));
-                        if content.cursor_position().row.saturating_sub(starting_row)
-                            >= num_rows_for_results
-                        {
-                            break 'outer;
-                        }
+                    );
+
+                    if content.cursor_position().row.saturating_sub(starting_row)
+                        >= num_rows_for_results
+                    {
+                        break 'outer;
                     }
                 }
                 content.newline();
@@ -2612,5 +2609,194 @@ pub fn signal_to_str(sig: libc::c_int) -> &'static str {
         libc::SIGALRM => "SIGALRM",
         libc::SIGTERM => "SIGTERM",
         _ => "Unknown signal",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content_builder::Contents;
+    use crate::history::{HistoryEntry, HistoryEntryFormatted};
+    use crate::palette::Palette;
+
+    #[test]
+    fn test_render_history_entry_wrapping_and_ellipsis() {
+        let palette = Palette::default();
+        let mut content = Contents::new(20);
+
+        let entries = vec![HistoryEntry::new(
+            None,
+            0,
+            "this is a very long command that will definitely wrap and need an ellipsis"
+                .to_string(),
+        )];
+
+        let formatted_entry = HistoryEntryFormatted::new(0, 100, vec![]);
+
+        // When unselected (max_display_rows = 1)
+        App::render_history_entry(
+            &mut content,
+            &formatted_entry,
+            &entries,
+            0,  // entry_idx
+            1,  // fuzzy_search_index (different from entry_idx -> unselected)
+            1,  // num_digits_for_index
+            3,  // num_digits_for_score
+            12, // header_prefix_width: (1+1) + (3+1) + 5 + 1 = 12
+            8,  // available_cols: 20 - 12 = 8
+            &palette,
+        );
+
+        // We expect it to write 1 line (plus a newline at the start)
+        assert_eq!(content.height(), 2);
+
+        let row1: String = content.buf[1].iter().map(|c| c.cell.symbol()).collect();
+        assert!(row1.starts_with("1 100       "));
+        assert!(row1.ends_with("…"));
+        assert_eq!(row1, "1 100       this is…");
+    }
+
+    #[test]
+    fn test_render_history_entry_multiline_selected() {
+        let palette = Palette::default();
+        let mut content = Contents::new(22);
+
+        let entries = vec![HistoryEntry::new(None, 0, "short command".to_string())];
+
+        let formatted_entry = HistoryEntryFormatted::new(0, 100, vec![]);
+
+        // When selected (max_display_rows = 4) and command wraps
+        App::render_history_entry(
+            &mut content,
+            &formatted_entry,
+            &entries,
+            0,  // entry_idx
+            0,  // fuzzy_search_index (same as entry_idx -> selected)
+            1,  // num_digits_for_index
+            3,  // num_digits_for_score
+            12, // header_prefix_width: (1+1) + (3+1) + 5 + 1 = 12
+            10, // available_cols: 22 - 12 = 10
+            &palette,
+        );
+
+        // Fits on two rows, so we expect exactly 2 rows (plus initial newline)
+        assert_eq!(content.height(), 3);
+
+        let row1: String = content.buf[1].iter().map(|c| c.cell.symbol()).collect();
+        assert_eq!(row1, "1 100      ▐short comm");
+
+        let row2: String = content.buf[2].iter().map(|c| c.cell.symbol()).collect();
+        assert_eq!(row2, "           ▐and       ");
+    }
+
+    #[test]
+    fn test_render_history_entry_multiline_unselected_ellipsis() {
+        let palette = Palette::default();
+        let mut content = Contents::new(25);
+
+        let entries = vec![HistoryEntry::new(
+            None,
+            0,
+            "echo \"\nabc\ndef\"".to_string(),
+        )];
+
+        let formatted_entry = HistoryEntryFormatted::new(0, 100, vec![]);
+
+        // When unselected (max_display_rows = 1)
+        App::render_history_entry(
+            &mut content,
+            &formatted_entry,
+            &entries,
+            0,  // entry_idx
+            1,  // fuzzy_search_index (different -> unselected)
+            1,  // num_digits_for_index
+            3,  // num_digits_for_score
+            12, // header_prefix_width: (1+1) + (3+1) + 5 + 1 = 12
+            13, // available_cols: 25 - 12 = 13
+            &palette,
+        );
+
+        // We expect it to write 1 line (plus a newline at the start)
+        assert_eq!(content.height(), 2);
+
+        let row1: String = content.buf[1].iter().map(|c| c.cell.symbol()).collect();
+        // Index is "1 100       ", command prefix is "echo \"", then "…", then spaces
+        assert_eq!(row1, "1 100       echo \"…      ");
+    }
+
+    #[test]
+    fn test_render_history_entry_multiline_selected_truncation() {
+        let palette = Palette::default();
+        let mut content = Contents::new(20);
+
+        let entries = vec![HistoryEntry::new(
+            None,
+            0,
+            "line1\nline2\nline3\nline4\nline5".to_string(),
+        )];
+
+        let formatted_entry = HistoryEntryFormatted::new(0, 100, vec![]);
+
+        // Selected, so max_display_rows = 4
+        App::render_history_entry(
+            &mut content,
+            &formatted_entry,
+            &entries,
+            0,  // entry_idx
+            0,  // fuzzy_search_index (same -> selected)
+            1,  // num_digits_for_index
+            3,  // num_digits_for_score
+            12, // header_prefix_width
+            8,  // available_cols
+            &palette,
+        );
+
+        // Expect 4 rows (plus initial newline) => height = 5
+        assert_eq!(content.height(), 5);
+
+        let row1: String = content.buf[1].iter().map(|c| c.cell.symbol()).collect();
+        assert_eq!(row1, "1 100      ▐line1   ");
+
+        let row2: String = content.buf[2].iter().map(|c| c.cell.symbol()).collect();
+        assert_eq!(row2, "        2/5▐line2   ");
+
+        let row3: String = content.buf[3].iter().map(|c| c.cell.symbol()).collect();
+        assert_eq!(row3, "        3/5▐line3   ");
+
+        let row4: String = content.buf[4].iter().map(|c| c.cell.symbol()).collect();
+        // Since it's truncated at row 4, we expect an ellipsis
+        assert_eq!(row4, "        4/5▐line4…  ");
+    }
+
+    #[test]
+    fn test_render_history_entry_multiwidth_character_truncation() {
+        let palette = Palette::default();
+        let mut content = Contents::new(19);
+
+        // "abcde🚀\nnext" has an emoji (🚀 is 2-columns wide) right at the boundary.
+        let entries = vec![HistoryEntry::new(None, 0, "abcde🚀\nnext".to_string())];
+
+        let formatted_entry = HistoryEntryFormatted::new(0, 100, vec![]);
+
+        // Unselected, so max_display_rows = 1.
+        App::render_history_entry(
+            &mut content,
+            &formatted_entry,
+            &entries,
+            0,  // entry_idx
+            1,  // fuzzy_search_index (different -> unselected)
+            1,  // num_digits_for_index
+            3,  // num_digits_for_score
+            12, // header_prefix_width
+            7,  // available_cols: 19 - 12 = 7
+            &palette,
+        );
+
+        // We expect it to write 1 line (plus initial newline) => height = 2
+        assert_eq!(content.height(), 2);
+
+        let row1: String = content.buf[1].iter().map(|c| c.cell.symbol()).collect();
+        // Index is "1 100       ", command text is "abcde", emoji is cleared and replaced by "…", followed by a blank space (cleared second cell of emoji)
+        assert_eq!(row1, "1 100       abcde… ");
     }
 }

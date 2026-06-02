@@ -283,7 +283,12 @@ impl Contents {
     ) -> bool {
         let graph_w = graph.symbol.width() as u16;
         let (left, right, bottom) = if let Some(area) = area {
-            (area.left(), area.right(), area.bottom())
+            let left = area.left().min(self.width);
+            let right = area.right().min(self.width);
+            if left >= right {
+                return false;
+            }
+            (left, right, area.bottom())
         } else {
             (0, self.width, u16::MAX)
         };
@@ -686,7 +691,7 @@ impl Contents {
         }
     }
 
-    fn get_char(x: u16, y: u16, area: Rect, is_selected: bool) -> char {
+    fn get_char_for_box(x: u16, y: u16, area: Rect, is_selected: bool) -> char {
         let char = match (x, y) {
             (x, y) if x == area.left() && y == area.top() => '╭',
             (x, y) if x == area.right() - 1 && y == area.top() => '╮',
@@ -779,7 +784,7 @@ impl Contents {
                 if let Some(row) = self.buf.get_mut(y as usize)
                     && let Some(tagged_cell) = row.get_mut(x as usize)
                 {
-                    let char = Self::get_char(x, y, area, is_selected);
+                    let char = Self::get_char_for_box(x, y, area, is_selected);
 
                     let style = if matches!(state, ButtonState::Normal) {
                         ratatui::style::Style::default()
@@ -820,6 +825,7 @@ impl Contents {
         style: ratatui::style::Style,
         is_selected: bool,
         connector_from: Option<Coord>,
+        status_str: Option<&str>,
     ) {
         if area.width < 2 || area.height < 2 {
             return;
@@ -844,7 +850,7 @@ impl Contents {
                 if let Some(row) = self.buf.get_mut(y as usize)
                     && let Some(tagged_cell) = row.get_mut(x as usize)
                 {
-                    let ch = Self::get_char(x, y, area, is_selected);
+                    let ch = Self::get_char_for_box(x, y, area, is_selected);
                     tagged_cell.cell.reset();
                     tagged_cell
                         .cell
@@ -853,6 +859,25 @@ impl Contents {
                     tagged_cell.tag = tag;
                 }
             }
+        }
+
+        if let Some(status) = status_str {
+            let max_status_width = area.width.saturating_sub(2) as usize;
+            let rect_for_status = Rect {
+                x: area.left() + 2,
+                y: area.bottom() - 1,
+                width: max_status_width as u16,
+                height: 1,
+            };
+            self.cursor_pos = Coord {
+                col: rect_for_status.x,
+                row: rect_for_status.y,
+            };
+            self.write_span_internal(
+                &TaggedSpan::new(Span::styled(status, style), tag),
+                true,
+                Some(rect_for_status),
+            );
         }
 
         if let Some(cursor_pos) = connector_from
@@ -907,6 +932,69 @@ impl Contents {
                 {
                     tagged_cell.tag = tag;
                 }
+            }
+        }
+    }
+
+    pub fn fill_rect(&mut self, area: Rect, symbol: &str, style: ratatui::style::Style, tag: Tag) {
+        for _ in self.buf.len()..area.bottom() as usize {
+            self.increase_buf_single_row();
+        }
+
+        for y in area.top()..area.bottom() {
+            if let Some(row) = self.buf.get_mut(y as usize) {
+                for x in area.left()..area.right() {
+                    if let Some(tagged_cell) = row.get_mut(x as usize) {
+                        tagged_cell.cell.reset();
+                        tagged_cell.cell.set_symbol(symbol).set_style(style);
+                        tagged_cell.tag = tag;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn draw_vertical_scrollbar(
+        &mut self,
+        x: u16,
+        y_start: u16,
+        length: u16,
+        total: usize,
+        visible: usize,
+        start: usize,
+        style: ratatui::style::Style,
+        tag: Tag,
+    ) {
+        if length == 0 || total == 0 || visible >= total {
+            return;
+        }
+
+        let l = length as f64;
+        let t = total as f64;
+        let v = visible as f64;
+        let s = start as f64;
+
+        // Size of the thumb (at least 1 cell)
+        let thumb_size = ((v / t) * l).round().max(1.0) as usize;
+        // Position of the thumb
+        let max_start = t - v;
+        let thumb_pos = if max_start > 0.0 {
+            ((s / max_start) * (l - thumb_size as f64)).round() as usize
+        } else {
+            0
+        };
+
+        for i in 0..length as usize {
+            let row_y = y_start + i as u16;
+            let is_thumb = i >= thumb_pos && i < thumb_pos + thumb_size;
+            let symbol = if is_thumb { "█" } else { "░" };
+
+            if let Some(row) = self.buf.get_mut(row_y as usize)
+                && let Some(tagged_cell) = row.get_mut(x as usize)
+            {
+                tagged_cell.cell.reset();
+                tagged_cell.cell.set_symbol(symbol).set_style(style);
+                tagged_cell.tag = tag;
             }
         }
     }
@@ -1060,7 +1148,6 @@ impl MatrixAnimState {
     }
 }
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1235,5 +1322,26 @@ mod tests {
         assert_eq!(contents.buf[0][5].cell.symbol(), "…");
         assert_eq!(contents.buf[0][6].cell.symbol(), " ");
         assert_eq!(contents.buf[0][6].tag, Tag::Blank);
+    }
+
+    #[test]
+    fn test_area_bounds_cropping_and_zero_width() {
+        let mut contents = Contents::new(10);
+        let span = TaggedSpan::new(Span::raw("abc"), Tag::Normal);
+
+        // 1. Zero-width rect: should fail immediately and write nothing
+        let zero_width_area = Rect::new(2, 0, 0, 5);
+        assert!(!contents.write_tagged_span_area(&span, zero_width_area));
+
+        // 2. Out-of-bounds rect (left >= right after cropping): should fail immediately
+        let oob_area = Rect::new(15, 0, 5, 5);
+        assert!(!contents.write_tagged_span_area(&span, oob_area));
+
+        // 3. Partially out-of-bounds rect: should crop and write successfully within cropped width
+        let partial_area = Rect::new(8, 0, 5, 2); // bottom is 2
+        assert!(contents.write_tagged_span_area(&span, partial_area));
+        assert_eq!(contents.buf[0][8].cell.symbol(), "a");
+        assert_eq!(contents.buf[0][9].cell.symbol(), "b");
+        assert_eq!(contents.buf[1][8].cell.symbol(), "c");
     }
 }

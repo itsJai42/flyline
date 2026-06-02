@@ -1843,7 +1843,7 @@ fn capitalize_first(s: &str) -> String {
 /// useful for backward compatibility with old applications. The "Esc+" option is recommended for most users"
 /// In text_buffer.rs, I check if either of them are set for maximal compatibility.
 /// From highest priority to lowest
-static DEFAULT_BINDINGS: LazyLock<[Binding; 86]> = LazyLock::new(|| {
+static DEFAULT_BINDINGS: LazyLock<[Binding; 87]> = LazyLock::new(|| {
     use KeyCode as KC;
     use KeyModifiers as M;
     [
@@ -1859,7 +1859,12 @@ static DEFAULT_BINDINGS: LazyLock<[Binding; 86]> = LazyLock::new(|| {
         ),
         Binding::new(
             &[KC::Up.into()],
-            ContextVar::TabCompletionAvailable.into(),
+            !ContextVar::UserTriggeredSuggestions + ContextVar::TabCompletionEntrySelected,
+            Action::TabCompletionMoveUp,
+        ),
+        Binding::new(
+            &[KC::Up.into()],
+            ContextVar::UserTriggeredSuggestions.into(),
             Action::TabCompletionMoveUp,
         ),
         Binding::new(
@@ -2827,7 +2832,17 @@ impl<'a> App<'a> {
             Some((action, context)) => (context.clone(), action.as_str().to_string()),
             None => ("none".to_string(), "none".to_string()),
         };
-        self.last_key_debug = Some((display_key_event(key), context_debug, action_debug));
+        let sequence_number = self
+            .last_key
+            .as_ref()
+            .map_or(1, |lk| lk.sequence_number + 1);
+        self.last_key = Some(crate::app::LastKeyPress {
+            key,
+            display: display_key_event(key),
+            context: context_debug,
+            action: action_debug,
+            sequence_number,
+        });
 
         if let Some((action, _)) = matched {
             log::trace!("Matched binding: {}", action.as_str());

@@ -1,4 +1,4 @@
-name: Generate GIF
+name: Generate Demos
 
 on:
   push:
@@ -6,12 +6,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: generate-gif
+  group: generate-demos
   cancel-in-progress: true
 
 jobs:
-  generate-gif:
-    name: Generate demo GIF
+  generate-demos:
+    name: Generate demo assets
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -22,7 +22,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build demo GIFs
+      - name: Build demo assets
         uses: docker/bake-action@v7
         with:
           files: docker-bake.hcl
@@ -32,9 +32,9 @@ jobs:
             *.cache-from=type=gha
             *.cache-to=type=gha,mode=max
 
-      - name: Upload GIFs to assets release
+      - name: Upload demo assets to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create assets --title "assets" --notes "Demo GIF storage" 2>/dev/null || true
-          gh release upload assets *.gif --clobber
+          gh release create assets --title "assets" --notes "Demo assets storage" 2>/dev/null || true
+          gh release upload assets *.svg --clobber

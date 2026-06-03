@@ -1,4 +1,4 @@
-FROM demo-base AS gif-builder
+FROM demo-base AS svg-builder
 
 # Override PS1 with a minimal prompt – the demo will set prompts interactively
 RUN printf '%s\n' \
@@ -16,4 +16,4 @@ RUN faketime @1771881894 /home/john/bin/evp demo_prompts_rps1.tape
 RUN faketime @1771881894 /home/john/bin/evp demo_prompts_ps1_fill.tape
 
 FROM scratch
-COPY --from=gif-builder /app/*.gif /
+COPY --from=svg-builder /app/*.svg /

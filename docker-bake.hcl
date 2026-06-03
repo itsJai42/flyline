@@ -150,74 +150,74 @@ target "_demo-base" {
 }
 
 
-target "demo-overview-extracted-gif" {
+target "demo-overview-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_overview.Dockerfile"
 }
 
-target "demo-prompts-extracted-gif" {
+target "demo-prompts-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_prompts.Dockerfile"
 }
 
-target "demo-fuzzy-suggestions-extracted-gif" {
+target "demo-fuzzy-suggestions-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_fuzzy_suggestions.Dockerfile"
 }
 
-target "demo-fuzzy-path-suggestions-extracted-gif" {
+target "demo-fuzzy-path-suggestions-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_fuzzy_path_suggestions.Dockerfile"
 }
 
-target "demo-custom-animation-extracted-gif" {
+target "demo-custom-animation-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_custom_animation.Dockerfile"
 }
 
-target "demo-agent-mode-extracted-gif" {
+target "demo-agent-mode-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_agent_mode.Dockerfile"
 }
 
-target "demo-ls-colors-extracted-gif" {
+target "demo-ls-colors-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_ls_colors.Dockerfile"
 }
 
-target "demo-fuzzy-history-extracted-gif" {
+target "demo-fuzzy-history-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_fuzzy_history.Dockerfile"
 }
 
-target "demo-inline-history-extracted-gif" {
+target "demo-inline-history-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_inline_history.Dockerfile"
 }
 
-target "demo-tab-completion-easing-extracted-gif" {
+target "demo-tab-completion-easing-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_tab_completion_easing.Dockerfile"
 }
 
-target "demo-auto-tab-completion-extracted-gif" {
+target "demo-auto-tab-completion-extracted" {
     inherits = ["_demo-base"]
     dockerfile = "docker/demo_auto_tab_completion.Dockerfile"
 }
 
 group "demos" {
     targets = [
-        "demo-overview-extracted-gif",
-        "demo-prompts-extracted-gif",
-        "demo-fuzzy-suggestions-extracted-gif",
-        "demo-fuzzy-path-suggestions-extracted-gif",
-        "demo-custom-animation-extracted-gif",
-        "demo-agent-mode-extracted-gif",
-        "demo-ls-colors-extracted-gif",
-        "demo-fuzzy-history-extracted-gif",
-        "demo-inline-history-extracted-gif",
-        "demo-tab-completion-easing-extracted-gif",
-        "demo-auto-tab-completion-extracted-gif"
+        "demo-overview-extracted",
+        "demo-prompts-extracted",
+        "demo-fuzzy-suggestions-extracted",
+        "demo-fuzzy-path-suggestions-extracted",
+        "demo-custom-animation-extracted",
+        "demo-agent-mode-extracted",
+        "demo-ls-colors-extracted",
+        "demo-fuzzy-history-extracted",
+        "demo-inline-history-extracted",
+        "demo-tab-completion-easing-extracted",
+        "demo-auto-tab-completion-extracted"
     ]
 }
 

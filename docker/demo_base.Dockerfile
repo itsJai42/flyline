@@ -1,4 +1,4 @@
-# Base image for demo GIF generation
+# Base image for demo generation
 
 # Use a recent Ubuntu base image
 FROM ubuntu:24.04 AS demo-base
@@ -15,8 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash-completion \
     faketime \
     fonts-noto-color-emoji \
-    fonts-noto-cjk \
-    fonts-noto-cjk-extra \
+    fonts-noto-mono \
     fontconfig \
     ca-certificates \
     curl \
@@ -28,7 +27,7 @@ USER john
 # Ensure build-time RUN steps (non-interactive shells) can resolve demo helper binaries.
 ENV PATH="/home/john/bin:${PATH}"
 
-ENV EVP_VERSION=v0.7.0
+ENV EVP_VERSION=v0.8.1
 ENV EVP_INSTALL_DIR=/home/john/bin
 RUN sh -c '/usr/bin/curl -sSfL https://raw.githubusercontent.com/HalFrgrd/evp/master/install.sh | sh'
 # COPY ./evp /home/john/bin/

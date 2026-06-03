@@ -184,6 +184,8 @@ pub enum Tag {
     HistoryResult(usize),
     Tooltip,
     AiResult(usize),
+    TabCompletionSource,
+    TabCompletionScrollBar { start_y: u16, height: u16 },
     TutorialPrev,
     TutorialNext,
     Tutorial,
@@ -826,7 +828,7 @@ impl Contents {
         style: ratatui::style::Style,
         is_selected: bool,
         connector_from: Option<Coord>,
-        status_str: Option<&str>,
+        status_line: Option<TaggedLine>,
     ) {
         if area.width < 2 || area.height < 2 {
             return;
@@ -862,7 +864,7 @@ impl Contents {
             }
         }
 
-        if let Some(status) = status_str {
+        if let Some(status) = status_line {
             let max_status_width = area.width.saturating_sub(2) as usize;
             let rect_for_status = Rect {
                 x: area.left() + 2,
@@ -874,11 +876,7 @@ impl Contents {
                 col: rect_for_status.x,
                 row: rect_for_status.y,
             };
-            self.write_span_internal(
-                &TaggedSpan::new(Span::styled(status, style), tag),
-                true,
-                Some(rect_for_status),
-            );
+            self.write_tagged_line_area(&status, rect_for_status);
         }
 
         if let Some(cursor_pos) = connector_from

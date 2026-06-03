@@ -76,7 +76,11 @@ impl DrawnContent {
             .enumerate()
             .rev()
             .find(|(col_idx, tagged_cell)| {
-                *col_idx <= term_em_x as usize && matches!(tagged_cell.tag, Tag::Command(_))
+                *col_idx <= term_em_x as usize
+                    && matches!(
+                        tagged_cell.tag,
+                        Tag::Command(_) | Tag::TabCompletionScrollBar { .. }
+                    )
             })
             .map(|(_, cell)| (cell.tag, false))
         {

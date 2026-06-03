@@ -815,9 +815,9 @@ impl<'a> App<'a> {
             Some((tag @ Tag::Ps1PromptCwdWidget(_), _)) => {
                 self.last_mouse_over_cell = Some(tag);
             }
-            // Some((tag @ Tag::TabCompletionScrollBar { .. }, true)) => {
-            //     self.last_mouse_over_cell = Some(tag);
-            // }
+            Some((tag @ Tag::TabCompletionScrollBar { .. }, _)) => {
+                self.last_mouse_over_cell = Some(tag);
+            }
             _ => {
                 self.last_mouse_over_cell = None;
                 self.tooltip = None;
@@ -1019,14 +1019,18 @@ impl<'a> App<'a> {
             }
             Some(Tag::TabCompletionScrollBar {
                 cell_height,
-                total_height,
+                max_cell_height,
             }) => {
                 if matches!(
                     mouse.kind,
                     MouseEventKind::Down(event::MouseButton::Left) | MouseEventKind::Drag(_)
                 ) {
                     if let ContentMode::TabCompletion(active_suggestions) = &mut self.content_mode {
-                        let relative_pos = cell_height as f64 / total_height as f64;
+                        let relative_pos = if max_cell_height == 0 {
+                            0.0
+                        } else {
+                            (cell_height as f64 + 0.5) / (max_cell_height as f64 + 1.0)
+                        };
                         active_suggestions.set_selected_by_scrollbar_pos(relative_pos);
                         update_buffer = true;
                     }

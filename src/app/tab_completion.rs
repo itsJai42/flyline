@@ -1080,6 +1080,11 @@ impl App<'_> {
     }
 
     pub fn start_tab_complete(&mut self, auto_started: bool) {
+        // This will stop the current thread
+        if let ContentMode::TabCompletionWaiting { .. } = self.content_mode {
+            self.content_mode = ContentMode::Normal;
+        }
+
         // Phase 1: compute the completion context and generate suggestions.
         // We store word_under_cursor as an owned SubString so we can use it
         // after the immutable-borrow block ends.
@@ -1109,7 +1114,7 @@ impl App<'_> {
                 );
             }
             if let Err(e) = tx.send(result.map(|r| (r, elapsed))) {
-                log::warn!(
+                log::debug!(
                     "Tab completion: failed to send result (receiver dropped): {:?}",
                     e
                 );

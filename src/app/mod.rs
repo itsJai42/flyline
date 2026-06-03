@@ -273,8 +273,13 @@ impl std::fmt::Debug for TabCompletionHandle {
 impl Drop for TabCompletionHandle {
     fn drop(&mut self) {
         if let Some(handle) = self.thread.take() {
-            if let Err(e) = handle.join() {
-                log::warn!("Tab completion thread panicked: {:?}", e);
+            #[cfg(unix)]
+            {
+                use std::os::unix::thread::JoinHandleExt;
+                let raw = handle.as_pthread_t();
+                unsafe {
+                    libc::pthread_cancel(raw);
+                }
             }
         }
     }
@@ -815,6 +820,7 @@ impl<'a> App<'a> {
             Some((tag @ Tag::Ps1PromptCwdWidget(_), _)) => {
                 self.last_mouse_over_cell = Some(tag);
             }
+            // TODO: These wont be shown
             Some((tag @ Tag::TabCompletionSource, true)) => {
                 self.last_mouse_over_cell = Some(tag);
                 if let ContentMode::TabCompletion(ref active_suggestions) = self.content_mode {

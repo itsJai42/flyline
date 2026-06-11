@@ -259,9 +259,8 @@ impl FuzzyHistorySource {
 /// Guard that owns the tab-completion background process and the result channel.
 /// Killing the process (on drop) ensures it does not outlive the app.
 pub(crate) struct TabCompletionHandle {
-    pub(crate) receiver:
-        std::sync::mpsc::Receiver<Option<(ActiveSuggestionsBuilder, std::time::Duration)>>,
-    pub(crate) shutdown_signal: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    receiver: std::sync::mpsc::Receiver<Option<(ActiveSuggestionsBuilder, std::time::Duration)>>,
+    pid: Option<libc::pid_t>,
 }
 
 impl std::fmt::Debug for TabCompletionHandle {
@@ -272,8 +271,14 @@ impl std::fmt::Debug for TabCompletionHandle {
 
 impl Drop for TabCompletionHandle {
     fn drop(&mut self) {
-        self.shutdown_signal
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(pid) = self.pid.take() {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                let mut status = 0;
+                libc::waitpid(pid, &mut status, 0);
+                log::info!("Tab completion process (pid {}) reaped", pid);
+            }
+        }
     }
 }
 

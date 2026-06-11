@@ -1049,6 +1049,7 @@ impl App<'_> {
         if auto_started {
             if builder.is_empty() {
                 self.content_mode = ContentMode::Normal;
+                self.dismissed_tab_completion_wuc = Some(wuc_substring.s.clone());
                 return;
             }
             let total_len = builder.processed.len() + builder.unprocessed.len();
@@ -1062,6 +1063,7 @@ impl App<'_> {
                 };
                 if matches_exact {
                     self.content_mode = ContentMode::Normal;
+                    self.dismissed_tab_completion_wuc = Some(wuc_substring.s.clone());
                     return;
                 }
             }
@@ -1196,8 +1198,8 @@ impl App<'_> {
                 }
             });
 
-            // Block for up to 100ms waiting for the process to finish.
-            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            // Block for some time waiting for the process to finish.
+            match rx.recv_timeout(std::time::Duration::from_millis(40)) {
                 Ok(Some((builder, elapsed))) => {
                     self.finish_tab_complete(builder, wuc_substring, elapsed, auto_started);
                 }

@@ -408,6 +408,8 @@ pub enum Action {
     TabCompletionMovePageDown,
     #[strum(message = "Accept the currently selected suggestion")]
     TabCompletionAcceptEntry,
+    #[strum(message = "Accept all currently shown suggestions")]
+    TabCompletionAcceptAll,
     #[strum(message = "Move to the previous tab completion suggestion")]
     TabCompletionPrevSuggestion,
     #[strum(message = "Move to the next tab completion suggestion")]
@@ -630,6 +632,12 @@ impl Action {
             Action::TabCompletionAcceptEntry => {
                 if let ContentMode::TabCompletion(active_suggestions) = &mut app.content_mode {
                     active_suggestions.accept_selected_filtered_item(&mut app.buffer);
+                    app.content_mode = ContentMode::Normal;
+                }
+            }
+            Action::TabCompletionAcceptAll => {
+                if let ContentMode::TabCompletion(active_suggestions) = &mut app.content_mode {
+                    active_suggestions.accept_all_filtered_items(&mut app.buffer);
                     app.content_mode = ContentMode::Normal;
                 }
             }
@@ -1857,7 +1865,7 @@ fn capitalize_first(s: &str) -> String {
 /// useful for backward compatibility with old applications. The "Esc+" option is recommended for most users"
 /// In text_buffer.rs, I check if either of them are set for maximal compatibility.
 /// From highest priority to lowest
-static DEFAULT_BINDINGS: LazyLock<[Binding; 89]> = LazyLock::new(|| {
+static DEFAULT_BINDINGS: LazyLock<[Binding; 90]> = LazyLock::new(|| {
     use KeyCode as KC;
     use KeyModifiers as M;
     [
@@ -1953,6 +1961,11 @@ static DEFAULT_BINDINGS: LazyLock<[Binding; 89]> = LazyLock::new(|| {
             &expand_variations![KC::Enter.into()],
             ContextVar::TabCompletionEntrySelected.into(),
             Action::TabCompletionAcceptEntry,
+        ),
+        Binding::new(
+            &expand_variations![M::CONTROL + KC::Enter.into(), M::SUPER + KC::Enter.into()],
+            ContextVar::TabCompletionAvailable.into(),
+            Action::TabCompletionAcceptAll,
         ),
         Binding::new(
             &expand_variations![KC::Enter.into()],
@@ -2831,6 +2844,48 @@ impl<'a> App<'a> {
 
         let key = apply_remappings(key, &self.settings.key_remappings);
         log::trace!("Key event after remapping: {:?}", key);
+
+        // Intercept keys for flycomp modes
+        match &mut self.content_mode {
+            ContentMode::TabCompletionAskForFlycomp {
+                command_word,
+                word_under_cursor,
+                selected_yes,
+            } => {
+                match key.code {
+                    KeyCode::Tab | KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                        *selected_yes = !*selected_yes;
+                    }
+                    KeyCode::Esc => {
+                        self.content_mode = ContentMode::Normal;
+                    }
+                    KeyCode::Enter => {
+                        if *selected_yes {
+                            let cmd = command_word.clone();
+                            let wuc = word_under_cursor.clone();
+                            self.run_flycomp(cmd, wuc);
+                        } else {
+                            self.content_mode = ContentMode::Normal;
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            ContentMode::TabCompletionRunningFlycomp { .. } => {
+                if key.code == KeyCode::Esc {
+                    // Cancel by returning to normal mode
+                    self.content_mode = ContentMode::Normal;
+                }
+                return;
+            }
+            ContentMode::TabCompletionFlycompResult { .. } => {
+                // Any key exits back to normal editing
+                self.content_mode = ContentMode::Normal;
+                return;
+            }
+            _ => {}
+        }
 
         // Evaluate every context variable once up front, so each variable's
         // condition runs at most once per key press regardless of how many

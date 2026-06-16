@@ -1616,6 +1616,7 @@ impl<'a> App<'a> {
                         (c == '/'
                             || c == '$'
                             || c == '~'
+                            || c == '.'
                             || (c == '-' && new_wuc.s.chars().all(|ch| ch == '-')))
                             && mods_satisfied
                     } else {

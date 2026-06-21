@@ -17,7 +17,7 @@ pub struct LastKeyPress {
 use crate::active_suggestions::{ActiveSuggestions, ActiveSuggestionsBuilder, COLUMN_PADDING};
 use crate::agent_mode::{AiOutputSelection, parse_ai_output};
 use crate::app::actions::Action;
-use crate::app::formatted_buffer::{FormattedBuffer, format_buffer};
+use crate::app::formatted_buffer::{FormattedBuffer, format_buffer, format_agent_buffer};
 use crate::content_builder::{Contents, SpanTag, Tag, TaggedLine, TaggedSpan};
 use crate::cursor::{Cursor, CursorBackend};
 use crate::dparser::{AnnotatedToken, ToInclusiveRange};
@@ -243,7 +243,6 @@ pub(crate) enum FuzzyHistorySource {
     // entry points that would do so are gated behind TODOs about UX). Allow
     // dead_code so the supporting machinery elsewhere is preserved for when
     // those entry points are wired up.
-    #[allow(dead_code)]
     CancelledCommands,
     #[allow(dead_code)]
     AgentPrompts,
@@ -363,6 +362,8 @@ pub(crate) struct App<'a> {
     /// Word-under-cursor at the time the user dismissed tab completion with Escape.
     /// While the new word-under-cursor equals this value, auto-suggest is suppressed.
     pub(super) dismissed_tab_completion_wuc: Option<String>,
+    /// Buffer contents at the time the user last dismissed the agent prompts fuzzy history search.
+    pub(super) dismissed_agent_prompts_buffer: Option<String>,
     pub(super) mouse_state: MouseState,
     pub(super) content_mode: ContentMode,
     pub(super) last_contents: Option<DrawnContent>,
@@ -432,6 +433,7 @@ impl<'a> App<'a> {
             inline_history_suggestion: None,
             dismissed_inline_suggestion_buffer: None,
             dismissed_tab_completion_wuc: None,
+            dismissed_agent_prompts_buffer: None,
             mouse_state: time_it!(
                 "startup: mouse state",
                 MouseState::initialize(&settings.mouse_mode)
@@ -964,7 +966,7 @@ impl<'a> App<'a> {
                 if let ContentMode::FuzzyHistorySearch(ref source) = self.content_mode {
                     let source = source.clone();
                     self.select_fuzzy_history_manager_mut(&source)
-                        .fuzzy_search_set_idx(idx);
+                        .fuzzy_search_set_idx(Some(idx));
                 }
             }
             Some(Tag::AiResult(idx)) => {
@@ -1082,7 +1084,7 @@ impl<'a> App<'a> {
                         _ => unreachable!(),
                     };
                     self.select_fuzzy_history_manager_mut(&source)
-                        .fuzzy_search_set_idx(idx);
+                        .fuzzy_search_set_idx(Some(idx));
                     self.accept_fuzzy_history_search();
                     update_buffer = true;
                 }
@@ -1283,11 +1285,53 @@ impl<'a> App<'a> {
         if let Some(entry) = self
             .select_fuzzy_history_manager(&source)
             .accept_fuzzy_search_result()
+            .cloned()
         {
             let new_command = entry.command.clone();
             self.buffer.replace_buffer(new_command.as_str());
         }
         self.content_mode = ContentMode::Normal;
+    }
+
+    fn accept_fuzzy_history_search_agent_command(&mut self) {
+        if let ContentMode::FuzzyHistorySearch(FuzzyHistorySource::AgentPrompts) = &self.content_mode {
+            let entry = self
+                .settings
+                .agent_prompt_history_manager
+                .accept_fuzzy_search_result()
+                .cloned();
+
+            if let Some(entry) = entry {
+                self.buffer.replace_buffer(&entry.command);
+
+                if let Some(raw_output) = &entry.raw_output {
+                    match parse_ai_output(raw_output) {
+                        Ok(parsed) => {
+                            self.content_mode = ContentMode::AgentOutputSelection(
+                                AiOutputSelection::new(parsed, &self.settings.colour_palette, self.buffer.buffer()),
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse cached AI output: {}", e);
+                            self.content_mode = ContentMode::AgentError {
+                                message: format!("Failed to parse cached AI output: {}", e),
+                                raw_output: raw_output.clone(),
+                                suggested_setup_command: None,
+                            };
+                            return;
+                        }
+                    }
+                }
+                self.content_mode = ContentMode::Normal;
+            } else {
+                if let Some((agent_cmd, buffer)) = self.resolve_agent_command(false) {
+                    self.start_agent_mode(agent_cmd, &buffer);
+                } else {
+                    self.show_agent_mode_not_configured_error();
+                }
+            }
+        }
     }
 
     /// Poll the AI background task; returns `true` if a redraw is needed.
@@ -1334,23 +1378,31 @@ impl<'a> App<'a> {
             };
         if let Some(result) = ai_result {
             match result {
-                Ok(raw_output) => match parse_ai_output(&raw_output) {
-                    Ok(parsed) => {
-                        self.content_mode = ContentMode::AgentOutputSelection(
-                            AiOutputSelection::new(parsed, &self.settings.colour_palette),
-                        );
+                Ok(raw_output) => {
+                    self.settings
+                        .agent_prompt_history_manager
+                        .set_last_raw_output(raw_output.clone());
+                    match parse_ai_output(&raw_output) {
+                        Ok(parsed) => {
+                            self.content_mode = ContentMode::AgentOutputSelection(
+                                AiOutputSelection::new(parsed, &self.settings.colour_palette, self.buffer.buffer()),
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!("AI command returned no suggestions: {}", e);
+                            self.content_mode = ContentMode::AgentError {
+                                message: format!("Failed to parse AI output: {}", e),
+                                raw_output,
+                                suggested_setup_command: None,
+                            };
+                        }
                     }
-                    Err(e) => {
-                        log::warn!("AI command returned no suggestions: {}", e);
-                        self.content_mode = ContentMode::AgentError {
-                            message: format!("Failed to parse AI output: {}", e),
-                            raw_output,
-                            suggested_setup_command: None,
-                        };
-                    }
-                },
+                }
                 Err((msg, raw_output)) => {
                     log::error!("AI command failed: {}", msg);
+                    self.settings
+                        .agent_prompt_history_manager
+                        .set_last_raw_output(raw_output.clone());
                     self.content_mode = ContentMode::AgentError {
                         message: msg,
                         raw_output,
@@ -1570,7 +1622,7 @@ impl<'a> App<'a> {
         needs_prefix: bool,
     ) -> Option<(settings::AgentModeCommand, String)> {
         if let Some((agent_cmd, stripped)) = self.buffer_starts_with_agent_command_prefix() {
-            return Some((agent_cmd.clone(), stripped.to_string()));
+            return Some((agent_cmd.clone(), stripped.trim_start().to_string()));
         }
 
         if needs_prefix {
@@ -1618,7 +1670,7 @@ impl<'a> App<'a> {
         // always push the (possibly empty) buffer and spawn the command.
         self.settings
             .agent_prompt_history_manager
-            .push_entry(buffer_str.to_string());
+            .push_entry(self.buffer.buffer().to_string());
         let cmd_args = agent_cmd.command;
         let final_arg = match agent_cmd.system_prompt.as_deref() {
             Some(prompt) => format!("{}\n{}", prompt, buffer_str),
@@ -1685,6 +1737,13 @@ impl<'a> App<'a> {
     }
 
     fn on_possible_buffer_change(&mut self) {
+        if let ContentMode::AgentOutputSelection(ref mut selection) = self.content_mode {
+            let current_buf = self.buffer.buffer();
+            if current_buf != selection.last_buffer_content {
+                selection.selected_idx = None;
+                selection.last_buffer_content = current_buf.to_string();
+            }
+        }
         let is_fresh = if let Some(last_key) = &self.last_key {
             let fresh = last_key.sequence_number > self.last_processed_key_sequence;
             self.last_processed_key_sequence = last_key.sequence_number;
@@ -1713,6 +1772,33 @@ impl<'a> App<'a> {
         } else {
             false
         };
+
+        let current_buf = self.buffer.buffer().to_string();
+        if self
+            .dismissed_agent_prompts_buffer
+            .as_deref()
+            .is_some_and(|b| b != current_buf)
+        {
+            self.dismissed_agent_prompts_buffer = None;
+        }
+
+        if !navigated_history && matches!(self.content_mode, ContentMode::Normal) {
+            if self.dismissed_agent_prompts_buffer.is_none()
+                && let Some((_agent_cmd, _stripped)) = self.buffer_starts_with_agent_command_prefix()
+            {
+                self.settings
+                    .agent_prompt_history_manager
+                    .warm_fuzzy_search_cache(self.buffer.buffer(), None);
+                self.content_mode = ContentMode::FuzzyHistorySearch(FuzzyHistorySource::AgentPrompts);
+            }
+        } else if matches!(
+            self.content_mode,
+            ContentMode::FuzzyHistorySearch(FuzzyHistorySource::AgentPrompts)
+        ) {
+            if self.buffer_starts_with_agent_command_prefix().is_none() {
+                self.content_mode = ContentMode::Normal;
+            }
+        }
 
         let is_tab_completion_active = matches!(
             self.content_mode,
@@ -1885,7 +1971,7 @@ impl<'a> App<'a> {
 
         self.dparser_tokens_cache = new_tokens;
 
-        let history_buffer = self.buffer_for_history().to_owned();
+        let history_buffer = self.buffer.buffer();
 
         // If the buffer has changed since the user dismissed the suggestion, re-enable it.
         if self
@@ -1903,17 +1989,30 @@ impl<'a> App<'a> {
             None
         } else {
             self.history_manager
-                .get_command_suggestion_suffix(&history_buffer)
+                .get_command_suggestion_suffix(history_buffer)
         };
 
-        self.formatted_buffer_cache = format_buffer(
-            &self.dparser_tokens_cache,
-            self.buffer.cursor_byte_pos(),
-            self.buffer.selection_byte(),
-            self.buffer.buffer().len(),
-            self.mode.is_running(),
-            &self.settings.colour_palette,
-        );
+        self.formatted_buffer_cache = if matches!(
+            self.content_mode,
+            ContentMode::FuzzyHistorySearch(FuzzyHistorySource::AgentPrompts)
+        ) {
+            format_agent_buffer(
+                &self.dparser_tokens_cache,
+                self.buffer.cursor_byte_pos(),
+                self.buffer.selection_byte(),
+                self.buffer.buffer().len(),
+                &self.settings.colour_palette,
+            )
+        } else {
+            format_buffer(
+                &self.dparser_tokens_cache,
+                self.buffer.cursor_byte_pos(),
+                self.buffer.selection_byte(),
+                self.buffer.buffer().len(),
+                self.mode.is_running(),
+                &self.settings.colour_palette,
+            )
+        };
 
         let cursor_byte_pos = self.buffer.cursor_byte_pos();
         self.tooltip = self
@@ -1934,17 +2033,6 @@ impl<'a> App<'a> {
                     None
                 }
             });
-    }
-
-    /// Returns the buffer string with any trailing auto-inserted closing tokens stripped.
-    /// This is the string that should be used when searching history.
-    fn buffer_for_history(&self) -> &str {
-        // TODO: figure out good UX for this
-        // dparser::DParser::buffer_without_auto_inserted_suffix(
-        //     &self.dparser_tokens_cache,
-        //     self.buffer.buffer(),
-        // )
-        self.buffer.buffer()
     }
 }
 

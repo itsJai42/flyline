@@ -29,6 +29,12 @@ enum ContextVar {
     BufferIsEmpty,
     #[strum(message = "Fuzzy history search overlay is active")]
     FuzzyHistorySearch,
+    #[strum(message = "Fuzzy history search overlay for normal commands is active")]
+    FuzzyHistorySearchNormalCommands,
+    #[strum(message = "Fuzzy history search overlay for cancelled commands is active")]
+    FuzzyHistorySearchCancelledCommands,
+    #[strum(message = "Fuzzy history search overlay for agent commands is active")]
+    FuzzyHistorySearchAgentCommands,
     #[strum(message = "Waiting for tab completion candidates to be produced")]
     TabCompletionWaiting,
     #[strum(message = "Tab completion overlay is active (any state)")]
@@ -81,6 +87,10 @@ enum ContextVar {
     TabCompletionRunningFlycomp,
     #[strum(message = "Flycomp completion synthesis finished and has a result or error")]
     TabCompletionFlycompResult,
+    #[strum(message = "Fuzzy history search overlay is active and no entry is currently selected")]
+    FuzzyHistorySearchNoneSelected,
+    #[strum(message = "Agent output selection is active and no suggestion is currently selected")]
+    AgentOutputNoneSelected,
 }
 
 impl ContextVar {
@@ -94,6 +104,15 @@ impl ContextVar {
             ContextVar::BufferIsEmpty => app.buffer.buffer().is_empty(),
             ContextVar::FuzzyHistorySearch => {
                 matches!(app.content_mode, ContentMode::FuzzyHistorySearch(_))
+            }
+            ContextVar::FuzzyHistorySearchNormalCommands => {
+                matches!(app.content_mode, ContentMode::FuzzyHistorySearch(FuzzyHistorySource::PastCommands))
+            }
+            ContextVar::FuzzyHistorySearchCancelledCommands => {
+                matches!(app.content_mode, ContentMode::FuzzyHistorySearch(FuzzyHistorySource::CancelledCommands))
+            }
+            ContextVar::FuzzyHistorySearchAgentCommands => {
+                matches!(app.content_mode, ContentMode::FuzzyHistorySearch(FuzzyHistorySource::AgentPrompts))
             }
             ContextVar::TabCompletionWaiting => {
                 matches!(app.content_mode, ContentMode::TabCompletionWaiting { .. })
@@ -178,6 +197,20 @@ impl ContextVar {
                     app.content_mode,
                     ContentMode::TabCompletionFlycompResult { .. }
                 )
+            }
+            ContextVar::FuzzyHistorySearchNoneSelected => {
+                if let ContentMode::FuzzyHistorySearch(ref source) = app.content_mode {
+                    app.select_fuzzy_history_manager(source).fuzzy_search_idx().is_none()
+                } else {
+                    false
+                }
+            }
+            ContextVar::AgentOutputNoneSelected => {
+                if let ContentMode::AgentOutputSelection(ref selection) = app.content_mode {
+                    selection.selected_idx.is_none()
+                } else {
+                    false
+                }
             }
         }
     }
@@ -428,6 +461,10 @@ pub enum Action {
     AgentOutputAcceptEntry,
     #[strum(message = "Move to the next tab completion suggestion")]
     AgentOutputNextSuggestion,
+    #[strum(message = "Select the first entry in agent output selection")]
+    AgentOutputSelectFirstEntry,
+    #[strum(message = "Start agent mode with the current buffer again")]
+    AgentOutputRunAgentMode,
     #[strum(message = "Move up in tab completion suggestions")]
     TabCompletionMoveUp,
     #[strum(message = "Move down in tab completion suggestions")]
@@ -450,6 +487,8 @@ pub enum Action {
     TabCompletionNextSuggestion,
     #[strum(message = "Scroll up through fuzzy history search results")]
     FuzzyHistorySelectPrev,
+    #[strum(message = "Select the top entry in the fuzzy history search results")]
+    FuzzyHistorySelectTopEntry,
     #[strum(message = "Scroll down through fuzzy history search results")]
     FuzzyHistorySelectNext,
     #[strum(message = "Scroll up one page")]
@@ -458,6 +497,8 @@ pub enum Action {
     FuzzyHistoryScrollPageDown,
     #[strum(message = "Accept the currently selected entry")]
     FuzzyHistoryAcceptEntry,
+    #[strum(message = "Accept the currently selected entry for agent commands")]
+    FuzzyHistoryAcceptAgentCommandEntry,
     #[strum(message = "Accept the current fuzzy history search suggestion for editing")]
     FuzzyHistoryAcceptAndEdit,
     #[strum(message = "Accept the current fuzzy history search suggestion and immediately run it")]
@@ -484,6 +525,8 @@ pub enum Action {
     CommentLineSubmit,
     #[strum(message = "Start fuzzy search through command history")]
     RunFuzzyHistorySearch,
+    #[strum(message = "Start fuzzy search through cancelled command history")]
+    RunFuzzyCancelledHistorySearch,
     #[strum(message = "Clear the screen")]
     ClearScreen,
     #[strum(message = "Delete until start of line")]
@@ -614,7 +657,7 @@ impl Action {
                 }
             }
             Action::InlineSuggestionDismiss => {
-                app.dismissed_inline_suggestion_buffer = Some(app.buffer_for_history().to_owned());
+                app.dismissed_inline_suggestion_buffer = Some(app.buffer.buffer().to_string());
                 app.inline_history_suggestion = None;
             }
             Action::AgentOutputSelectNext => {
@@ -639,6 +682,18 @@ impl Action {
             Action::AgentOutputNextSuggestion => {
                 if let ContentMode::AgentOutputSelection(selection) = &mut app.content_mode {
                     selection.move_down(); // TODO: cycle through
+                }
+            }
+            Action::AgentOutputSelectFirstEntry => {
+                if let ContentMode::AgentOutputSelection(selection) = &mut app.content_mode {
+                    selection.set_selected_by_idx(0);
+                }
+            }
+            Action::AgentOutputRunAgentMode => {
+                if let Some((agent_cmd, buffer)) = app.resolve_agent_command(false) {
+                    app.start_agent_mode(agent_cmd, &buffer);
+                } else {
+                    app.content_mode = ContentMode::Normal;
                 }
             }
             Action::FlycompAskToggleChoice => {
@@ -732,6 +787,14 @@ impl Action {
                 app.select_fuzzy_history_manager_mut(&source)
                     .fuzzy_search_onkeypress(HistorySearchDirection::Forward);
             }
+            Action::FuzzyHistorySelectTopEntry => {
+                let source = match &app.content_mode {
+                    ContentMode::FuzzyHistorySearch(s) => s.clone(),
+                    _ => return,
+                };
+                app.select_fuzzy_history_manager_mut(&source)
+                    .fuzzy_search_set_idx(Some(0));
+            }
             Action::FuzzyHistorySelectNext => {
                 let source = match &app.content_mode {
                     ContentMode::FuzzyHistorySearch(s) => s.clone(),
@@ -758,6 +821,9 @@ impl Action {
             }
             Action::FuzzyHistoryAcceptEntry => {
                 app.accept_fuzzy_history_search();
+            }
+            Action::FuzzyHistoryAcceptAgentCommandEntry => {
+                app.accept_fuzzy_history_search_agent_command();
             }
             Action::FuzzyHistoryAcceptAndEdit => {
                 app.accept_fuzzy_history_search();
@@ -819,11 +885,10 @@ impl Action {
                 app.mode = crate::app::AppRunningState::Exiting(crate::app::ExitState::EOF);
             }
             Action::Cancel => {
-                // TODO: think of good UX for cancelled-command history. We
-                // currently neither push the cancelled buffer onto the
-                // cancelled-command history manager nor open the fuzzy
-                // history search for it; both code paths are intentionally
-                // disabled until the UX is designed.
+                let buf = app.buffer.buffer();
+                if !buf.trim().is_empty() {
+                    app.settings.cancelled_command_history_manager.push_entry(buf.to_string());
+                }
                 app.mode =
                     crate::app::AppRunningState::Exiting(crate::app::ExitState::WithoutCommand);
             }
@@ -833,10 +898,14 @@ impl Action {
                 app.try_submit_current_buffer();
             }
             Action::RunFuzzyHistorySearch => {
-                let history_buffer = app.buffer_for_history().to_owned();
-                app.history_manager.warm_fuzzy_search_cache(&history_buffer);
+                app.history_manager.warm_fuzzy_search_cache(app.buffer.buffer(), Some(0));
                 app.content_mode =
                     ContentMode::FuzzyHistorySearch(FuzzyHistorySource::PastCommands);
+            }
+            Action::RunFuzzyCancelledHistorySearch => {
+                app.settings.cancelled_command_history_manager.warm_fuzzy_search_cache(app.buffer.buffer(), Some(0));
+                app.content_mode =
+                    ContentMode::FuzzyHistorySearch(FuzzyHistorySource::CancelledCommands);
             }
             Action::ClearScreen => {
                 app.needs_screen_cleared = true;
@@ -936,20 +1005,18 @@ impl Action {
                 app.buffer.clear_selection();
                 app.buffer_before_history_navigation
                     .get_or_insert_with(|| app.buffer.buffer().to_string());
-                let history_buffer = app.buffer_for_history().to_owned();
                 if let Some(entry) = app
                     .history_manager
-                    .search_in_history(&history_buffer, HistorySearchDirection::Backward)
+                    .search_in_history(app.buffer.buffer(), HistorySearchDirection::Backward)
                 {
                     app.buffer.replace_buffer(&entry.command);
                 }
             }
             Action::NextHistoryEntry => {
                 app.buffer.clear_selection();
-                let history_buffer = app.buffer_for_history().to_owned();
                 match app
                     .history_manager
-                    .search_in_history(&history_buffer, HistorySearchDirection::Forward)
+                    .search_in_history(app.buffer.buffer(), HistorySearchDirection::Forward)
                 {
                     Some(entry) => {
                         app.buffer.replace_buffer(&entry.command);
@@ -1163,6 +1230,9 @@ impl Action {
                     }
                     ContentMode::TabCompletionWaiting { wuc_substring, .. } => {
                         app.dismissed_tab_completion_wuc = Some(wuc_substring.s.to_string());
+                    }
+                    ContentMode::FuzzyHistorySearch(FuzzyHistorySource::AgentPrompts) => {
+                        app.dismissed_agent_prompts_buffer = Some(app.buffer.buffer().to_string());
                     }
                     _ => {
                         // Not tab completion; just clear the dismissed field.
@@ -2133,9 +2203,9 @@ static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
             Action::FuzzyHistoryScrollPageDown,
         ),
         Binding::new(
-            &[
+            &expand_variations![
                 M::CONTROL + KC::Char('r').into(),
-                M::META + KC::Char('r').into(),
+                M::ALT + KC::Char('r').into(),
             ],
             ContextVar::FuzzyHistorySearch.into(),
             Action::EscapeToNormalMode, // Stop fuzzy history search if active, otherwise escape to normal mode
@@ -2152,7 +2222,17 @@ static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
         ),
         Binding::new(
             &expand_variations![KC::Enter.into()],
-            ContextVar::FuzzyHistorySearch.into(),
+            ContextVar::FuzzyHistorySearchAgentCommands.into(),
+            Action::FuzzyHistoryAcceptAgentCommandEntry,
+        ),
+        Binding::new(
+            &expand_variations![KC::Enter.into()],
+            ContextVar::FuzzyHistorySearchNormalCommands.into(),
+            Action::FuzzyHistoryAcceptEntry,
+        ),
+        Binding::new(
+            &expand_variations![KC::Enter.into()],
+            ContextVar::FuzzyHistorySearchCancelledCommands.into(),
             Action::FuzzyHistoryAcceptEntry,
         ),
         Binding::new(
@@ -2169,6 +2249,11 @@ static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
             &expand_variations![KC::Enter.into()],
             ContextVar::AgentModeError.into(),
             Action::AgentModeRunHelpCommand,
+        ),
+        Binding::new(
+            &expand_variations![KC::Enter.into()],
+            ContextVar::AgentOutputNoneSelected.into(),
+            Action::AgentOutputRunAgentMode,
         ),
         Binding::new(
             &expand_variations![KC::Enter.into()],
@@ -2204,6 +2289,11 @@ static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
         // Scoped Esc bindings must appear before the Normal Esc binding.
         Binding::new(
             &[KC::Tab.into()],
+            ContextVar::FuzzyHistorySearchNoneSelected.into(),
+            Action::FuzzyHistorySelectTopEntry,
+        ),
+        Binding::new(
+            &[KC::Tab.into()],
             ContextVar::FuzzyHistorySearch.into(),
             Action::FuzzyHistoryAcceptAndEdit,
         ),
@@ -2211,6 +2301,11 @@ static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
             &expand_variations![KC::BackTab.into()],
             ContextVar::AgentOutputSelection.into(),
             Action::AgentOutputSelectPrev,
+        ),
+        Binding::new(
+            &[KC::Tab.into()],
+            ContextVar::AgentOutputNoneSelected.into(),
+            Action::AgentOutputSelectFirstEntry,
         ),
         Binding::new(
             &[KC::Tab.into()],
@@ -2361,10 +2456,14 @@ static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
         Binding::new(
             &[
                 M::CONTROL + KC::Char('r').into(),
-                M::META + KC::Char('r').into(),
             ],
             ContextVar::Always.into(),
             Action::RunFuzzyHistorySearch,
+        ),
+        Binding::new(
+            &expand_variations![M::ALT + KC::Char('r').into(),],
+            ContextVar::Always.into(),
+            Action::RunFuzzyCancelledHistorySearch,
         ),
         Binding::new(
             &[M::CONTROL + KC::Char('l').into()],
@@ -3132,7 +3231,6 @@ impl<'a> App<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::Settings;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {

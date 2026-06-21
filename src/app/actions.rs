@@ -1130,6 +1130,8 @@ impl Action {
                 app.buffer.set_selection_range(0..len, false);
             }
             // https://github.com/theimpostor/osc
+            // Normally the terminal emulator handles Ctrl+V
+            // But if it doesn't it gives us an opportunity use OSC52 request system clibpoard!
             Action::PasteSystemClipboard => {
                 use std::io::Write;
                 let mut stdout = std::io::stdout();

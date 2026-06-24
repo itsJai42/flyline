@@ -73,6 +73,9 @@ impl DrawnContent {
                 | Tag::RightClickCopy
                 | Tag::RightClickCut
                 | Tag::RightClickPaste
+                | Tag::RightClickUndo
+                | Tag::RightClickRedo
+                | Tag::RightClickRunTutorial
                 | Tag::RightClickMenu
         ) {
             return Some((direct_tag, direct_tag));
@@ -1375,6 +1378,9 @@ impl<'a> App<'a> {
                 (copy_label.as_str(), Tag::RightClickCopy),
                 (cut_label.as_str(), Tag::RightClickCut),
                 ("Paste", Tag::RightClickPaste),
+                ("Undo", Tag::RightClickUndo),
+                ("Redo", Tag::RightClickRedo),
+                ("Run Tutorial", Tag::RightClickRunTutorial),
             ];
             let selected_tag = self.mouse_state.last_mouse_over_cell_semantic;
             let style = self.settings.colour_palette.right_click_menu();
@@ -1593,7 +1599,6 @@ impl<'a> App<'a> {
             .first()
             .map(|sug| unicode_width::UnicodeWidthStr::width(sug.prefix.as_str()))
             .unwrap_or(0);
-        let suggestion_prefix_width = suggestion_prefix_width.min(2);
 
         let pos_string = active_suggestions
             .current_1d_index()

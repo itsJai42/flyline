@@ -257,6 +257,9 @@ impl MouseState {
                     | Tag::RightClickCopy
                     | Tag::RightClickCut
                     | Tag::RightClickPaste
+                    | Tag::RightClickUndo
+                    | Tag::RightClickRedo
+                    | Tag::RightClickRunTutorial
             )
         }) {
             PointerShape::Pointer

@@ -824,6 +824,9 @@ impl<'a> App<'a> {
                         Some(Tag::RightClickCopy)
                             | Some(Tag::RightClickCut)
                             | Some(Tag::RightClickPaste)
+                            | Some(Tag::RightClickUndo)
+                            | Some(Tag::RightClickRedo)
+                            | Some(Tag::RightClickRunTutorial)
                             | Some(Tag::RightClickMenu)
                     );
                     !released_at_start && !released_on_menu
@@ -885,7 +888,12 @@ impl<'a> App<'a> {
         {
             if !matches!(
                 clicked_tag,
-                Some(Tag::RightClickCopy) | Some(Tag::RightClickCut) | Some(Tag::RightClickPaste)
+                Some(Tag::RightClickCopy)
+                    | Some(Tag::RightClickCut)
+                    | Some(Tag::RightClickPaste)
+                    | Some(Tag::RightClickUndo)
+                    | Some(Tag::RightClickRedo)
+                    | Some(Tag::RightClickRunTutorial)
             ) {
                 if self.right_click_popup_pos.take().is_some() {
                     cleared_popup = true;
@@ -1138,6 +1146,46 @@ impl<'a> App<'a> {
                         self,
                         crossterm::event::KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
                     );
+                    self.right_click_popup_pos = None;
+                    self.right_click_copy_target = None;
+                    update_buffer = true;
+                }
+            }
+            Some(Tag::RightClickUndo) => {
+                if matches!(mouse.kind, MouseEventKind::Up(_)) {
+                    Action::Undo.run(
+                        self,
+                        crossterm::event::KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+                    );
+                    self.right_click_popup_pos = None;
+                    self.right_click_copy_target = None;
+                    update_buffer = true;
+                }
+            }
+            Some(Tag::RightClickRedo) => {
+                if matches!(mouse.kind, MouseEventKind::Up(_)) {
+                    Action::Redo.run(
+                        self,
+                        crossterm::event::KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+                    );
+                    self.right_click_popup_pos = None;
+                    self.right_click_copy_target = None;
+                    update_buffer = true;
+                }
+            }
+            Some(Tag::RightClickRunTutorial) => {
+                if matches!(mouse.kind, MouseEventKind::Up(_)) {
+                    self.settings.run_tutorial = true;
+                    self.settings.tutorial_step = crate::tutorial::TutorialStep::Welcome;
+
+                    if let Err(e) = crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                        crossterm::cursor::MoveTo(0, 0)
+                    ) {
+                        log::warn!("Failed to clear terminal: {}", e);
+                    }
+
                     self.right_click_popup_pos = None;
                     self.right_click_copy_target = None;
                     update_buffer = true;
@@ -1951,6 +1999,8 @@ impl<'a> App<'a> {
                             || c == '$'
                             || c == '~'
                             || c == '.'
+                            || c == '+'
+                            || c == '='
                             || (c == '-' && new_wuc.s.chars().all(|ch| ch == '-')))
                             && mods_satisfied
                     } else {
@@ -2028,12 +2078,23 @@ impl<'a> App<'a> {
                     // If the word under cursor is cleared, discard suggestions
                     self.content_mode = ContentMode::Normal;
                 } else if new_wuc.overlaps_with(&active_suggestions.word_under_cursor) {
-                    log::debug!(
-                        "Word under cursor changed slightly ('{}' -> '{}'), applying fuzzy filter to tab completion suggestions",
-                        active_suggestions.word_under_cursor.s,
-                        new_wuc.s
-                    );
-                    active_suggestions.update_word_under_cursor(&new_wuc);
+                    let old_char_count = active_suggestions.word_under_cursor.s.chars().count();
+                    let new_char_count = new_wuc.s.chars().count();
+                    if old_char_count.abs_diff(new_char_count) > 1 {
+                        log::debug!(
+                            "Word under cursor changed slightly but by multiple characters ('{}' -> '{}'), restarting automatic tab completion",
+                            active_suggestions.word_under_cursor.s,
+                            new_wuc.s
+                        );
+                        restart_auto_completion = true;
+                    } else {
+                        log::debug!(
+                            "Word under cursor changed slightly ('{}' -> '{}'), applying fuzzy filter to tab completion suggestions",
+                            active_suggestions.word_under_cursor.s,
+                            new_wuc.s
+                        );
+                        active_suggestions.update_word_under_cursor(&new_wuc);
+                    }
                 } else {
                     log::debug!(
                         "Word under cursor changed significantly ('{:?}' -> '{:?}'), discarding tab completion suggestions",

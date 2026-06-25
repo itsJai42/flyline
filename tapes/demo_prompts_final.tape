@@ -16,7 +16,7 @@ Enter
 Show
 
 Type "# Let's configure a transient prompt"
-Entercd
+Enter
 Sleep 1000ms
 
 Type `PS1_FINAL='Ran at \D{%Y-%m-%d %H:%M:%S}> '`

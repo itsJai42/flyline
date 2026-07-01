@@ -1,5 +1,10 @@
 pub(crate) const CHANGELOG: &str = r#"# Changelog
 
+## v1.2.2
+- **Changelog Command**: Added `flyline changelog` command to display user-facing changelogs directly in the pager.
+- **Upgrade Assistant**: Added `flyline upgrade` command which pre-fills the prompt line with the curl installer command.
+- **Installer improvements**: Streamlined `install.sh` to run non-interactively, resolving target folders automatically.
+
 ## v1.2.1
 - **Declarative Mouse Actions**: Re-architected mouse event processing into a declarative, context-aware routing system.
 - **Tab Completion Latency**: Reduced visual flashing during tab completion redraws and optimized filtering latency for large lists.

@@ -907,6 +907,57 @@ mod description_tests {
         );
         assert!(active_large.nosort);
     }
+
+    #[test]
+    fn test_accept_all_filtered_items_spaces() {
+        let buf_str = "mycmd f";
+        let mut buffer = TextBuffer::new(buf_str);
+        let wuc = SubString::new(buf_str, &buf_str[6..7]).unwrap();
+        let mut suggestions = ActiveSuggestions {
+            unprocessed_suggestions: std::collections::VecDeque::new(),
+            processed_suggestions: vec![
+                ProcessedSuggestion::new("foo ", "", ""),
+                ProcessedSuggestion::new("bar", "", ""),
+                ProcessedSuggestion::new(" baz ", "", ""),
+            ],
+            filtered_suggestions: vec![
+                FilteredItem {
+                    suggestion_idx: 0,
+                    score: 0,
+                    matching_indices: vec![],
+                },
+                FilteredItem {
+                    suggestion_idx: 1,
+                    score: 0,
+                    matching_indices: vec![],
+                },
+                FilteredItem {
+                    suggestion_idx: 2,
+                    score: 0,
+                    matching_indices: vec![],
+                },
+            ],
+            selected_coord: None,
+            original_word_under_cursor: wuc.clone(),
+            word_under_cursor: wuc,
+            last_num_rows_per_col: 0,
+            last_num_visible_cols: 0,
+            last_num_data_cols: 0,
+            col_window_to_show: StatefulSlidingWindow::new(0, 1, 3, Some(1)),
+            row_window_to_show: StatefulSlidingWindow::new(0, 1, 3, Some(1)),
+            fuzzy_matcher: ArinaeMatcher::new(skim::CaseMatching::Smart, true),
+            load_time: std::time::Duration::from_millis(0),
+            comp_type: crate::tab_completion_context::CompType::FirstWord,
+            auto_started: false,
+            nosort: false,
+            sort_order: crate::settings::SuggestionSortOrder::default(),
+            formatted_cache: vec![None, None, None],
+            max_width_cache: std::cell::Cell::new(None),
+        };
+
+        suggestions.accept_all_filtered_items(&mut buffer);
+        assert_eq!(buffer.buffer(), "mycmd foo bar baz ");
+    }
 }
 
 impl ProcessedSuggestion {
@@ -2042,7 +2093,18 @@ impl ActiveSuggestions {
             return;
         }
 
-        let joined = suggestion_strings.join(" ");
+        let mut joined = String::new();
+        for (i, s) in suggestion_strings.iter().enumerate() {
+            if i > 0 {
+                let ends_with_space = joined.ends_with(' ');
+                let starts_with_space = s.starts_with(' ');
+                if !ends_with_space && !starts_with_space {
+                    joined.push(' ');
+                }
+            }
+            joined.push_str(s);
+        }
+
         if let Err(e) = buffer.replace_word_under_cursor(&joined, &self.word_under_cursor) {
             log::error!("Failed to apply all suggestions: {}", e);
         }

@@ -343,13 +343,15 @@ fn flyline_load_common() -> c_int {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(Box::new(Flyline::new()));
 
-        bash_funcs::export_env_var(FLYLINE_ENV_VAR_NAME, FLYLINE_ENV_VAR_VALUE).unwrap_or_else(|e| {
-            log::error!(
-                "Failed to export environment variable '{}': {}",
-                FLYLINE_ENV_VAR_NAME,
-                e
-            );
-        });
+        bash_funcs::export_env_var(FLYLINE_ENV_VAR_NAME, FLYLINE_ENV_VAR_VALUE).unwrap_or_else(
+            |e| {
+                log::error!(
+                    "Failed to export environment variable '{}': {}",
+                    FLYLINE_ENV_VAR_NAME,
+                    e
+                );
+            },
+        );
 
         let load_dir_var = "FLYLINE_LOAD_DIR";
         let is_load_dir_set = unsafe {

@@ -10,7 +10,7 @@ curl -sSfL https://github.com/HalFrgrd/flyline/releases/latest/download/install.
 ```
 
 ### What the installer does:
-1. **Platform Detection**: Automatically detects your Operating System (Linux, macOS), Architecture (x86_64, aarch64, etc.), and libc variant (glibc, musl).
+1. **Platform Detection**: Automatically detects your Operating System (Linux, macOS, FreeBSD), Architecture (x86_64, aarch64, armv7, i686, riscv64gc, powerpc64le), and libc variant (glibc, musl).
 2. **Download**: Fetches the matching release tarball (`.tar.gz`) and checksum file directly from the GitHub releases page (latest version or `FLYLINE_INSTALL_VERSION`).
 3. **Extraction**: Unpacks the compiled library into `~/.local/lib/` (or your custom `FLYLINE_INSTALL_DIR`).
 4. **Symlink Management**: Creates a versioned file (e.g., `libflyline.so.1.2.1`) and updates the `libflyline.so` symlink to point to it.

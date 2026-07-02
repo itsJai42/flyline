@@ -106,6 +106,7 @@ detect_os() {
     case "$os" in
         Linux) echo "linux" ;;
         Darwin) echo "darwin" ;;
+        FreeBSD) echo "freebsd" ;;
         *) err "Unsupported OS: $os" ;;
     esac
 }
@@ -115,6 +116,10 @@ detect_arch() {
     case "$arch" in
         x86_64 | amd64) echo "x86_64" ;;
         aarch64 | arm64) echo "aarch64" ;;
+        armv7* | armhf) echo "armv7" ;;
+        i386 | i486 | i586 | i686) echo "i686" ;;
+        riscv64) echo "riscv64gc" ;;
+        ppc64le | powerpc64le) echo "powerpc64le" ;;
         *) err "Unsupported architecture: $arch" ;;
     esac
 }
@@ -199,9 +204,26 @@ main() {
                 err "    brew install bash"
             fi
         fi
+    elif [ "$OS" = "freebsd" ]; then
+        if [ "$ARCH" != "x86_64" ]; then
+            err "Unsupported FreeBSD architecture: $ARCH. Only x86_64 is supported."
+        fi
+        TARGET="x86_64-unknown-freebsd"
+        LIB_NAME="libflyline.so"
     else
         LIBC="$(detect_libc)"
-        TARGET="${ARCH}-unknown-linux-${LIBC}"
+        case "$ARCH" in
+            armv7)
+                if [ "$LIBC" = "gnu" ]; then
+                    TARGET="armv7-unknown-linux-gnueabihf"
+                else
+                    err "Unsupported libc ($LIBC) for armv7. Only gnu (gnueabihf) is supported."
+                fi
+                ;;
+            *)
+                TARGET="${ARCH}-unknown-linux-${LIBC}"
+                ;;
+        esac
         LIB_NAME="libflyline.so"
     fi
 

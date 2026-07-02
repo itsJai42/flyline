@@ -380,9 +380,9 @@ unsafe extern "C" {
     pub fn expand_string_to_string(string: *const c_char, quoted: c_int) -> *mut c_char;
 
     // xmalloc.h
-    pub fn xmalloc(size: libc::size_t) -> *mut libc::c_void;
-    pub fn xrealloc(ptr: *mut libc::c_void, size: libc::size_t) -> *mut libc::c_void;
-    pub fn xfree(ptr: *mut libc::c_void);
+    fn xmalloc(size: libc::size_t) -> *mut libc::c_void;
+    fn xrealloc(ptr: *mut libc::c_void, size: libc::size_t) -> *mut libc::c_void;
+    fn xfree(ptr: *mut libc::c_void);
 
     // Signal handling
     /* Set to the value of any terminating signal received. */
@@ -430,12 +430,26 @@ unsafe extern "C" {
     pub fn show_var_attributes(var: *mut ShellVar, flags: c_int, output_fd: c_int) -> c_int;
 }
 
-/// Allocate a copy of `s` using bash's `xmalloc`.
-///
-/// # Safety
-/// Must be called while bash is loaded. The returned pointer must be freed with
-/// `xfree` or passed to bash (which will free it with `xfree`).
-pub unsafe fn xmalloc_cstr(s: &std::ffi::CStr) -> *mut c_char {
+pub(crate) static BASH_LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
+
+/// Guarded xmalloc
+#[allow(dead_code)]
+pub unsafe fn locked_xmalloc(size: libc::size_t) -> *mut libc::c_void {
+    let _guard = BASH_LOCK.lock();
+    unsafe { xmalloc(size) }
+}
+
+/// Guarded xfree
+pub unsafe fn locked_xfree(ptr: *mut libc::c_void) {
+    if !ptr.is_null() {
+        let _guard = BASH_LOCK.lock();
+        unsafe { xfree(ptr) };
+    }
+}
+
+/// Guarded xmalloc_cstr
+pub unsafe fn locked_xmalloc_cstr(s: &std::ffi::CStr) -> *mut c_char {
+    let _guard = BASH_LOCK.lock();
     let bytes = s.to_bytes_with_nul();
     unsafe {
         let ptr = xmalloc(bytes.len()) as *mut c_char;
@@ -674,12 +688,14 @@ pub struct StringList {
 }
 
 pub fn set_readline_state(state: libc::c_ulong) {
+    let _guard = BASH_LOCK.lock();
     unsafe {
         rl_readline_state |= state;
     }
 }
 
 pub fn clear_readline_state(state: libc::c_ulong) {
+    let _guard = BASH_LOCK.lock();
     unsafe {
         rl_readline_state &= !state;
     }

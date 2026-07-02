@@ -176,6 +176,12 @@ impl Flyline {
 
             unsafe { libc::signal(libc::SIGCHLD, prev_sigchld) };
 
+            // Join the background cache warming thread before returning control to Bash.
+            // This ensures that no background Rust threads are running or calling Bash FFI
+            // functions while Bash is executing command execution C code (which is single-threaded
+            // and has no locking of its own).
+            crate::threads::join_threads_by_tag(crate::threads::ThreadTag::Warming);
+
             // unsafe {
             //     // This doesn't seem to be strictly necessary but yy_readline_get does it here.
             //     // I think something upstream will handle it if we don't run this here.
@@ -257,7 +263,7 @@ pub static mut flyline_struct: bash_symbols::BashBuiltin = bash_symbols::BashBui
 // On pre-bash-4.4 builds, register a shared-library constructor so that flyline
 // is initialised as soon as the library is loaded via `enable -f`.
 // On newer versions of bash `flyline_builtin_load` is called automatically by bash during enable.
-#[cfg(feature = "pre_bash_4_4")]
+#[cfg(all(feature = "pre_bash_4_4", not(test)))]
 #[ctor(unsafe)]
 fn flyline_builtin_load_ctor() {
     let _ = flyline_load_common();
@@ -327,14 +333,14 @@ fn flyline_load_common() -> c_int {
         let old_name = unsafe { (*bash_input).name };
         // Bash expects name to be heap allocated so it can free it later
         let name = c"flyline";
-        let name_ptr = unsafe { bash_symbols::xmalloc_cstr(name) };
+        let name_ptr = unsafe { bash_symbols::locked_xmalloc_cstr(name) };
         unsafe {
             (*bash_input).stream_type = bash_symbols::StreamType::Stdin;
             (*bash_input).name = name_ptr;
             (*bash_input).getter = Some(flyline_get_char);
             (*bash_input).ungetter = Some(flyline_unget_char);
             if !old_name.is_null() {
-                bash_symbols::xfree(old_name as *mut libc::c_void);
+                bash_symbols::locked_xfree(old_name as *mut libc::c_void);
             }
         }
 

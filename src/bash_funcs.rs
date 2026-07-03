@@ -807,6 +807,7 @@ impl ProgrammableCompleteReturn {
 
 #[cfg(not(test))]
 fn vec_of_strings_from_char_char_ptr(ptr: *mut *mut c_char) -> Vec<String> {
+    let _guard = crate::bash_symbols::BASH_LOCK.lock();
     let mut strings = Vec::new();
     let mut seen = HashSet::new();
     unsafe {
@@ -819,6 +820,7 @@ fn vec_of_strings_from_char_char_ptr(ptr: *mut *mut c_char) -> Vec<String> {
         // Since we invoke programmable_completions out-of-band directly, we must free
         // both the individual strings and the array container using locked_xfree.
         let mut i = 0;
+        let mut ptrs_to_free = Vec::new();
         loop {
             let c_str_ptr = *ptr.add(i);
             if c_str_ptr.is_null() {
@@ -830,8 +832,11 @@ fn vec_of_strings_from_char_char_ptr(ptr: *mut *mut c_char) -> Vec<String> {
                     strings.push(str_slice.to_string());
                 }
             }
-            bash_symbols::locked_xfree(c_str_ptr as *mut libc::c_void);
+            ptrs_to_free.push(c_str_ptr);
             i += 1;
+        }
+        for c_str_ptr in ptrs_to_free {
+            bash_symbols::locked_xfree(c_str_ptr as *mut libc::c_void);
         }
         bash_symbols::locked_xfree(ptr as *mut libc::c_void);
     }
@@ -1203,6 +1208,7 @@ pub fn get_envvar_value(var_name: &str) -> Option<String> {
 
 #[cfg(not(test))]
 pub fn get_hostname() -> String {
+    let _guard = crate::bash_symbols::BASH_LOCK.lock();
     unsafe {
         let ptr = bash_symbols::current_host_name;
         if ptr.is_null() {

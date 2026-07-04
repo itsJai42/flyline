@@ -217,6 +217,10 @@ impl HistoryManager {
             let zsh_entries = Self::parse_zsh_history(zsh_path);
             Self::log_recent_entries(&zsh_entries, "zsh");
             Self::normalize_entries(zsh_entries)
+        } else if Settings::is_fish_host() {
+            let fish_entries = Self::parse_fish_history();
+            Self::log_recent_entries(&fish_entries, "fish");
+            Self::normalize_entries(fish_entries)
         } else {
             // Bash loads history into memory after bashrc; read it from there.
             let bash_entries = Self::parse_bash_history_from_memory();
@@ -373,6 +377,74 @@ impl HistoryManager {
             res.push(entry);
         }
 
+        res
+    }
+
+    /// Read the fish history file. The widget passes the session's file via
+    /// `FLYLINE_FISH_HISTORY`; fall back to fish's default location.
+    fn parse_fish_history() -> Vec<HistoryEntry> {
+        let hist_path = std::env::var("FLYLINE_FISH_HISTORY").unwrap_or_else(|_| {
+            let data_dir = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                format!("{home}/.local/share")
+            });
+            format!("{data_dir}/fish/fish_history")
+        });
+
+        log::debug!("Reading fish history from: {}", hist_path);
+
+        let content = match std::fs::read(&hist_path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) => {
+                log::warn!("Failed to read fish history from {}: {}", hist_path, e);
+                String::new()
+            }
+        };
+        let res = time_it!(
+            "parse fish history",
+            HistoryManager::parse_fish_history_str(&content)
+        );
+
+        log::debug!("Parsed fish history ({} entries)", res.len());
+        res
+    }
+
+    /// Parse fish's YAML-ish history format:
+    /// `- cmd: <command>` (with `\n` and `\\` escapes) then `  when: <secs>`.
+    fn parse_fish_history_str(s: &str) -> Vec<HistoryEntry> {
+        fn unescape(cmd: &str) -> String {
+            let mut out = String::with_capacity(cmd.len());
+            let mut chars = cmd.chars();
+            while let Some(c) = chars.next() {
+                if c != '\\' {
+                    out.push(c);
+                    continue;
+                }
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('\\') => out.push('\\'),
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => out.push('\\'),
+                }
+            }
+            out
+        }
+
+        let mut res = Vec::<HistoryEntry>::new();
+        for line in s.lines() {
+            if let Some(cmd) = line.strip_prefix("- cmd: ") {
+                let entry = HistoryEntry::new(None, res.len(), unescape(cmd));
+                res.push(entry);
+            } else if let Some(when) = line.strip_prefix("  when: ")
+                && let Some(entry) = res.last_mut()
+            {
+                entry.timestamp = when.trim().parse::<u64>().ok();
+            }
+            // other keys (paths etc.) are ignored
+        }
         res
     }
 
@@ -837,6 +909,30 @@ mod tests {
         assert_eq!(HistoryManager::parse_timestamp("#12345"), Some(12345));
         assert_eq!(HistoryManager::parse_timestamp("12345"), None);
         assert_eq!(HistoryManager::parse_timestamp("#not_a_number"), None);
+    }
+
+    #[test]
+    fn test_parse_fish_history() {
+        const TEST_HISTORY: &str = "- cmd: ls -al\n  when: 1625078400\n- cmd: echo one\\ntwo\n  when: 1625078460\n  paths:\n    - /some/path\n- cmd: printf 'a\\\\tb'\n";
+        let entries = HistoryManager::parse_fish_history_str(TEST_HISTORY);
+        assert_eq!(entries.len(), 3);
+
+        assert_eq!(entries[0].timestamp, Some(1625078400));
+        assert_eq!(entries[0].index, 0);
+        assert_eq!(entries[0].command, "ls -al");
+
+        assert_eq!(entries[1].timestamp, Some(1625078460));
+        assert_eq!(entries[1].command, "echo one\ntwo");
+
+        assert_eq!(entries[2].timestamp, None);
+        assert_eq!(entries[2].command, "printf 'a\\tb'");
+    }
+
+    #[test]
+    fn test_parse_fish_history_empty_and_garbage() {
+        assert!(HistoryManager::parse_fish_history_str("").is_empty());
+        // `when` with no preceding cmd must not panic.
+        assert!(HistoryManager::parse_fish_history_str("  when: 123\n").is_empty());
     }
 
     #[test]

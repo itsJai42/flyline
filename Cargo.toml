@@ -23,6 +23,10 @@ path = "tests/zsh_completion_tests.rs"
 name = "zsh_integration_tests"
 path = "tests/zsh_integration_tests.rs"
 
+[[test]]
+name = "fish_integration_tests"
+path = "tests/fish_integration_tests.rs"
+
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = { version = "4.6.3", features = ["unstable-dynamic"] }

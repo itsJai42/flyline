@@ -13,7 +13,7 @@ use crate::bash_funcs::{
     CommandWordInfo, CompletionFlags, ProgrammableCompleteReturn, find_quote_type,
 };
 use crate::kill_on_drop_child::KillOnDropChild;
-use crate::shell::{HistoryRecord, ShellBackend};
+use crate::shell::{HistoryRecord, ShellBackend, hostname_from_uname, shell_var_name};
 use anyhow::Context;
 
 const DAEMON_SCRIPT: &str = include_str!("zsh_comp_daemon.zsh");
@@ -218,40 +218,7 @@ fn parse_command_table(out: &str) -> CommandTable {
 
 /// Run `zsh <args>`, capturing stdout; `None` on failure/timeout (fail-open).
 fn run_zsh_timeout(args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new("zsh")
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    // Ephemeral I/O reader, not a tracked bash-func thread; lint opt-out is local.
-    #[allow(clippy::disallowed_methods)]
-    std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.read_to_string(&mut s);
-        let _ = tx.send(s);
-    });
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let out = rx.recv().unwrap_or_default();
-                return status.success().then_some(out);
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(_) => return None,
-        }
-    }
+    crate::shell::run_with_timeout("zsh", args, timeout)
 }
 
 /// The zsh host backend. Select with `shell::set_backend(&ZSH_BACKEND)` at
@@ -297,25 +264,6 @@ fn zsh_expand(s: &str) -> String {
         std::env::remove_var("_FLYLINE_EXPAND");
     }
     expanded
-}
-
-fn hostname_from_uname() -> String {
-    let mut buf = [0u8; 256];
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-    if rc == 0 {
-        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-        String::from_utf8_lossy(&buf[..end]).into_owned()
-    } else {
-        String::new()
-    }
-}
-
-fn shell_var_name(name: &str) -> Option<&str> {
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        None
-    } else {
-        Some(name)
-    }
 }
 
 impl ZshBackend {

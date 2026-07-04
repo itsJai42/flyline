@@ -128,6 +128,15 @@ target "zsh-integration-test" {
     dockerfile = "docker/zsh_integration_test.Dockerfile"
 }
 
+target "fish-integration-test" {
+    context = "."
+    contexts = {
+        # same artifact as zsh: libflyline.so + flyline-standalone
+        built-artifact = "target:extract-zsh-integration-test-build-artifact"
+    }
+    dockerfile = "docker/fish_integration_test.Dockerfile"
+}
+
 
 
 

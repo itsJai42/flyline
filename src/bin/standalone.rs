@@ -1,14 +1,16 @@
-//! Standalone flyline editor for zsh host integration.
+//! Standalone flyline editor for zsh and fish host integration.
 //!
-//! Launched from the `zle-line-init` widget in `scripts/flyline.zsh`. Draws the
-//! TUI on `/dev/tty` and writes the accepted command line to fd 3. Exit codes:
+//! Launched from the `zle-line-init` widget in `scripts/flyline.zsh` or the
+//! `fish_prompt` event handler in `scripts/flyline.fish` (`FLYLINE_HOST`
+//! selects the backend; zsh for compatibility when unset). Draws the TUI on
+//! `/dev/tty` and writes the accepted command line to fd 3. Exit codes:
 //!   0   — command accepted
 //!   130 — cancelled (Ctrl-C / empty abort)
 //!   1   — EOF or internal error
 
 use flyline::{
-    ExitState, Settings, ZSH_BACKEND, get_command, init_standalone_logging, run_comp_broker,
-    set_backend, set_cloexec,
+    ExitState, FISH_BACKEND, Settings, ZSH_BACKEND, get_command, init_standalone_logging,
+    run_comp_broker, set_backend, set_cloexec,
 };
 
 fn catch_unwind_safe<T>(f: impl FnOnce() -> T) -> Result<T, ()> {
@@ -19,7 +21,7 @@ fn write_command_fd3(cmd: &str) {
     use std::io::Write;
     use std::os::fd::{FromRawFd, RawFd};
 
-    // ponytail: fd 3 is owned by the zsh parent; never close it on drop.
+    // ponytail: fd 3 is owned by the host shell parent; never close it on drop.
     let fd = RawFd::from(3);
     let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
     let _ = file.write_all(cmd.as_bytes());
@@ -36,14 +38,18 @@ fn run() -> i32 {
         return run_comp_broker(std::path::Path::new(&sock));
     }
 
-    // SAFETY: standalone is a fresh process; no other threads read these yet.
-    unsafe {
-        std::env::set_var("FLYLINE_HOST", "zsh");
-    }
     // Mark the fd 3 handoff pipe close-on-exec so helper grandchildren can't hold
     // it open and wedge the parent's `$( ... 3>&1 )` (write_command_fd3 still works).
     set_cloexec(3);
-    set_backend(&ZSH_BACKEND);
+    if std::env::var("FLYLINE_HOST").as_deref() == Ok("fish") {
+        set_backend(&FISH_BACKEND);
+    } else {
+        // SAFETY: standalone is a fresh process; no other threads read these yet.
+        unsafe {
+            std::env::set_var("FLYLINE_HOST", "zsh");
+        }
+        set_backend(&ZSH_BACKEND);
+    }
 
     if let Err(e) = init_standalone_logging() {
         eprintln!("flyline: failed to initialize logging: {e}");

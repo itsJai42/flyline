@@ -284,6 +284,11 @@ impl Settings {
         crate::shell::is_zsh_host_env()
     }
 
+    /// True when flyline runs as the standalone fish line editor (`FLYLINE_HOST=fish`).
+    pub fn is_fish_host() -> bool {
+        crate::shell::is_fish_host_env()
+    }
+
     fn default_zsh_history_path() -> Option<String> {
         if Self::is_zsh_host() {
             Some(std::env::var("HISTFILE").unwrap_or_else(|_| {

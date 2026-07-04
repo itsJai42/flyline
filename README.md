@@ -95,6 +95,47 @@ sh install.sh --uninstall   # remove the ~/.zshrc block, flyline-standalone, and
 - **One-time rc boot cost.** Loading a heavy `~/.zshrc` (e.g. powerlevel10k) adds ~1–2s when the completion daemon first starts; the persistent daemon amortizes it across the session. `FLYLINE_ZSH_NO_RCS=1` avoids it.
 - **Variable introspection is partial.** Variable tooltips and `$VAR` completion use a per-call `zsh -f`, so they see exported environment variables but not unexported shell parameters.
 
+### Fish
+
+The same `install.sh` also sets up fish when `fish` is on your `PATH`: it installs `flyline-standalone` under `~/.local/lib` (or `FLYLINE_INSTALL_DIR`), drops `scripts/flyline.fish` there, and writes a loader to `~/.config/fish/conf.d/flyline.fish` (fish auto-sources `conf.d` — your `config.fish` is never touched):
+
+```fish
+# >>> flyline start >>>
+set -gx FLYLINE_BIN "$HOME/.local/lib/flyline-standalone"
+test -r "$HOME/.local/lib/scripts/flyline.fish"; and source "$HOME/.local/lib/scripts/flyline.fish"
+# <<< flyline end <<<
+```
+
+**Enable / disable (current shell):**
+
+```fish
+flyline_enable    # turn flyline on (already on after install)
+flyline_disable   # restore native fish line editing for this session
+```
+
+**Uninstall:**
+
+```fish
+flyline_uninstall   # disable flyline and unset FLYLINE_BIN in this session
+```
+
+```sh
+sh install.sh --uninstall   # remove conf.d/flyline.fish, flyline-standalone, and scripts/flyline.fish
+```
+
+**Fail-open:** flyline runs as a separate process from a `fish_prompt` event handler. If the binary is missing, you cancel, or flyline crashes, fish falls back to native line editing for that line — your shell keeps working.
+
+**Completions reuse your fish setup.** flyline asks `fish -c 'complete -C -- <buffer>'` for completions, so it completes exactly what your interactive fish does — including descriptions — with your config and completion files loaded. Unlike zsh, fish exposes its completion engine headlessly, so there is no persistent daemon or broker: each request is a fresh ~10–30ms `fish` call.
+
+**Prompts come pre-rendered.** fish prompts are functions, so the widget captures `fish_prompt`/`fish_right_prompt` output (ANSI included) and hands it to flyline — starship, tide, and hand-rolled prompts all work without special-casing.
+
+#### Fish limitations
+
+- **History is file-mediated.** The widget runs `history save` before launching flyline, which then reads the session's history file — recent commands are visible, but this is not a live read of the parent shell's in-memory list.
+- **Variable introspection is partial.** Variable tooltips and `$VAR` completion use a per-call `fish -c`, so they see exported and universal variables but not unexported globals of the parent session.
+- **Abbreviations don't expand inline.** `abbr` expansions are shown as alias tooltips and used for completion lookup, but typing an abbreviation in flyline inserts it literally.
+- **fish's prompt-time terminal queries are disabled while flyline is on.** fish 4.x sends blocking terminal queries (cursor position, background color) around each prompt and hard-`assert!`s if one is still pending when the next is issued (`reader.rs`, `query.is_none()`) — a TUI taking the tty from a `fish_prompt` handler consumes the reply under real terminal latency and crashes fish itself (reproduced with ≥300ms reply lag; guarded by a regression test). The widget therefore sets `FISH_TEST_NO_RECURRENT_QUERIES` while enabled and clears it on `flyline_disable`. Practical cost: fish's automatic light/dark background detection pauses while flyline is active. Accepted lines execute via a signal-deferred `commandline -f execute` (with queries off, fish's reader only drains queued readline functions when woken).
+
 ### Arch Linux
 
 Arch users can install the [AUR package](https://aur.archlinux.org/packages/flyline):

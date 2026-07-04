@@ -26,6 +26,7 @@ ZSHRC="${HOME}/.zshrc"
 FLYLINE_ZSHRC_START="# >>> flyline start >>>"
 FLYLINE_ZSHRC_END="# <<< flyline end <<<"
 STANDALONE_BIN="flyline-standalone"
+FISH_CONFD="${XDG_CONFIG_HOME:-${HOME}/.config}/fish/conf.d/flyline.fish"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -280,6 +281,74 @@ remove_zshrc_flyline_block() {
     say "Removed flyline block from ${ZSHRC}"
 }
 
+# ---------------------------------------------------------------------------
+# Fish integration
+# ---------------------------------------------------------------------------
+
+has_fish() {
+    command -v fish >/dev/null 2>&1
+}
+
+install_flyline_fish_script() {
+    dest="${INSTALL_DIR}/scripts/flyline.fish"
+    mkdir -p "${INSTALL_DIR}/scripts"
+
+    if [ -f "./scripts/flyline.fish" ]; then
+        cp "./scripts/flyline.fish" "$dest"
+        return
+    fi
+    if [ -n "${0:-}" ] && [ "$0" != "sh" ]; then
+        script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+        if [ -f "${script_dir}/scripts/flyline.fish" ]; then
+            cp "${script_dir}/scripts/flyline.fish" "$dest"
+            return
+        fi
+    fi
+
+    if [ -z "${VERSION:-}" ]; then
+        err "Cannot locate scripts/flyline.fish (run install from a checkout or set FLYLINE_INSTALL_VERSION)."
+    fi
+    say "Downloading scripts/flyline.fish..."
+    download "https://raw.githubusercontent.com/${REPO}/${VERSION}/scripts/flyline.fish" "$dest"
+}
+
+# Write the conf.d loader (fish auto-sources conf.d — no config.fish edits, so
+# no backup is needed; the file is entirely flyline-owned and safe to overwrite).
+write_fish_confd() {
+    mkdir -p "$(dirname "$FISH_CONFD")"
+    cat > "$FISH_CONFD" <<EOF
+# >>> flyline start >>>
+set -gx FLYLINE_BIN "${INSTALL_DIR}/${STANDALONE_BIN}"
+test -r "${INSTALL_DIR}/scripts/flyline.fish"; and source "${INSTALL_DIR}/scripts/flyline.fish"
+# <<< flyline end <<<
+EOF
+    say "Wrote fish loader: ${FISH_CONFD}"
+}
+
+install_fish_integration() {
+    if ! has_fish; then
+        return
+    fi
+
+    install_flyline_fish_script
+
+    standalone_path="${INSTALL_DIR}/${STANDALONE_BIN}"
+    if [ -f "$standalone_path" ]; then
+        chmod +x "$standalone_path"
+        say "Installed fish editor: ${standalone_path}"
+    else
+        warn "fish detected but ${standalone_path} is not installed yet."
+        warn "Fish integration will stay disabled until the standalone binary is available."
+    fi
+
+    write_fish_confd
+}
+
+remove_fish_integration() {
+    rm -f "$FISH_CONFD" "${INSTALL_DIR}/scripts/flyline.fish"
+    say "Removed fish integration files"
+}
+
 # Install from locally-built artifacts (cargo build) instead of a release
 # download. Symlinks the built binary/lib and the checkout's widget script into
 # INSTALL_DIR, then wires up ~/.zshrc — so rebuilds are picked up automatically.
@@ -328,29 +397,44 @@ local_main() {
     ln -sf "${REPO_DIR}/scripts/flyline.zsh" "${INSTALL_DIR}/scripts/flyline.zsh"
     say "Linked ${INSTALL_DIR}/scripts/flyline.zsh -> ${REPO_DIR}/scripts/flyline.zsh"
 
-    if ! has_zsh; then
-        warn "zsh not found on PATH; installed files but skipped ~/.zshrc integration."
+    ln -sf "${REPO_DIR}/scripts/flyline.fish" "${INSTALL_DIR}/scripts/flyline.fish"
+    say "Linked ${INSTALL_DIR}/scripts/flyline.fish -> ${REPO_DIR}/scripts/flyline.fish"
+
+    if ! has_zsh && ! has_fish; then
+        warn "Neither zsh nor fish found on PATH; installed files but skipped shell integration."
         return
     fi
 
-    ensure_zshrc_block
+    if has_zsh; then
+        ensure_zshrc_block
+    fi
+    if has_fish; then
+        write_fish_confd
+    fi
 
     say ""
     say "Local install complete."
-    say "    Activate now:        exec zsh"
+    if has_zsh; then
+        say "    Activate now (zsh):  exec zsh"
+    fi
+    if has_fish; then
+        say "    Activate now (fish): exec fish"
+    fi
     say "    Disable in session:  flyline_disable"
     say "    Uninstall:           sh install.sh --uninstall"
     say "    Symlinks mean rebuilds are picked up automatically (no re-install)."
 }
 
 uninstall_main() {
-    say "Uninstalling flyline zsh integration..."
+    say "Uninstalling flyline zsh/fish integration..."
     remove_zshrc_flyline_block
+    remove_fish_integration
     rm -f "${INSTALL_DIR}/${STANDALONE_BIN}" "${INSTALL_DIR}/scripts/flyline.zsh"
     rmdir "${INSTALL_DIR}/scripts" 2>/dev/null || true
-    say "Removed zsh integration files from ${INSTALL_DIR}"
+    say "Removed zsh/fish integration files from ${INSTALL_DIR}"
     say "libflyline was left in place for Bash users; remove ${INSTALL_DIR}/libflyline.so (or .dylib) manually if unused."
     say "Restart zsh or run: unfunction flyline_enable flyline_disable flyline_uninstall _flyline_edit 2>/dev/null"
+    say "Restart fish or run: flyline_uninstall"
 }
 
 # ---------------------------------------------------------------------------
@@ -480,6 +564,8 @@ main() {
 
     install_zsh_integration
 
+    install_fish_integration
+
     # Update or add 'enable -f ... flyline' in ~/.bashrc.
     if [ -z "${FLYLINE_VERSION:-}" ]; then
         ENABLE_CMD="enable -f ${LIB_PATH} flyline"
@@ -530,6 +616,9 @@ main() {
         fi
         if has_zsh && [ -f "${INSTALL_DIR}/${STANDALONE_BIN}" ]; then
             say '    For zsh, open a new terminal (or run: exec zsh).'
+        fi
+        if has_fish && [ -f "${INSTALL_DIR}/${STANDALONE_BIN}" ]; then
+            say '    For fish, open a new terminal (or run: exec fish).'
         fi
         say '    Or open a new terminal and run the tutorial:'
         say "        flyline run-tutorial"

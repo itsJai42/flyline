@@ -1,13 +1,77 @@
 //! Host shell abstraction. `ShellBackend` is the seam over the original Bash
-//! `bash_funcs` FFI that lets a second host (zsh) plug in: the app talks to
-//! `shell::backend()` instead of Bash-specific free functions.
+//! `bash_funcs` FFI that lets other hosts (zsh, fish) plug in: the app talks
+//! to `shell::backend()` instead of Bash-specific free functions.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 pub use crate::bash_funcs::{CommandWordInfo, ProgrammableCompleteReturn};
 
+pub mod fish;
 pub mod zsh;
+
+/// Run `bin <args>`, capturing stdout; `None` on failure/timeout (fail-open).
+pub(crate) fn run_with_timeout(bin: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Ephemeral I/O reader, not a tracked bash-func thread; lint opt-out is local.
+    #[allow(clippy::disallowed_methods)]
+    std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stdout.read_to_string(&mut s);
+        let _ = tx.send(s);
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = rx.recv().unwrap_or_default();
+                return status.success().then_some(out);
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+pub(crate) fn hostname_from_uname() -> String {
+    let mut buf = [0u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc == 0 {
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// `Some(name)` when `name` is a plain identifier safe to interpolate into a
+/// helper-shell script; `None` otherwise (injection guard).
+pub(crate) fn shell_var_name(name: &str) -> Option<&str> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        None
+    } else {
+        Some(name)
+    }
+}
 
 /// One entry from the host shell's in-memory command history.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,15 +427,23 @@ pub fn is_zsh_host_env() -> bool {
     std::env::var("FLYLINE_HOST").as_deref() == Ok("zsh")
 }
 
+/// True when `FLYLINE_HOST=fish` selects the standalone fish backend.
+pub fn is_fish_host_env() -> bool {
+    std::env::var("FLYLINE_HOST").as_deref() == Ok("fish")
+}
+
 fn init_backend() -> &'static dyn ShellBackend {
     if is_zsh_host_env() {
         &zsh::ZSH_BACKEND
+    } else if is_fish_host_env() {
+        &fish::FISH_BACKEND
     } else {
         &BASH
     }
 }
 
-/// The active host shell backend. Defaults to Bash unless `FLYLINE_HOST=zsh`.
+/// The active host shell backend. Defaults to Bash unless `FLYLINE_HOST` picks
+/// zsh or fish.
 pub fn backend() -> &'static dyn ShellBackend {
     *ACTIVE.get_or_init(init_backend)
 }

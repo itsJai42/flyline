@@ -45,7 +45,20 @@ edition = "2024"
 workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "flyline-standalone"
+path = "src/bin/standalone.rs"
+required-features = ["standalone"]
+
+[[test]]
+name = "zsh_completion_tests"
+path = "tests/zsh_completion_tests.rs"
+
+[[test]]
+name = "zsh_integration_tests"
+path = "tests/zsh_integration_tests.rs"
 
 [dependencies]
 ansi-to-tui.workspace = true
@@ -85,6 +98,7 @@ uuid = { version = "1.10", features = ["v7"] }
 
 [features]
 pre_bash_4_4 = []
+standalone = []
 
 [dev-dependencies]
 rusty-fork = "0.3.1"

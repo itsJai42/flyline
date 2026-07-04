@@ -51,7 +51,7 @@ mod mouse_state;
 pub mod path;
 mod prompt_manager;
 mod settings;
-pub(crate) use settings::settings;
+pub use settings::settings;
 pub mod shell;
 mod shell_integration;
 pub(crate) mod subshell_ipc;
@@ -60,6 +60,20 @@ mod tutorial;
 mod users;
 
 pub use tag::{ClipboardTypes, Contents, Tag, TaggedCell, TaggedLine, TaggedSpan};
+
+#[cfg(feature = "standalone")]
+pub use app::{ExitState, get_command};
+#[cfg(feature = "standalone")]
+pub use settings::Settings;
+#[cfg(feature = "standalone")]
+pub use shell::zsh::{ZSH_BACKEND, run_comp_broker, set_cloexec};
+#[cfg(feature = "standalone")]
+pub use shell::{backend, is_zsh_host_env, set_backend};
+
+#[cfg(feature = "standalone")]
+pub fn init_standalone_logging() -> anyhow::Result<()> {
+    logging::init()
+}
 
 pub use completions::context as tab_completion_context;
 pub use grammar::command_acceptance;

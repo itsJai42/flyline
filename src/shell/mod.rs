@@ -122,6 +122,9 @@ pub enum BuiltinExitCode {
 pub mod test_backend;
 pub use test_backend::TestBackend;
 
+#[cfg(feature = "standalone")]
+pub mod zsh;
+
 /// The host shell that flyline is embedded in or driven by.
 ///
 /// Implementors must be `Sync`: a single backend is shared by `&'static`
@@ -299,6 +302,17 @@ fn init_backend() -> &'static dyn ShellBackend {
 /// The active host shell backend. Defaults to `BashBackend`.
 pub fn backend() -> &'static dyn ShellBackend {
     *ACTIVE.get_or_init(init_backend)
+}
+
+/// True when the standalone editor is hosted by zsh.
+pub fn is_zsh_host_env() -> bool {
+    std::env::var("FLYLINE_HOST").as_deref() == Ok("zsh")
+}
+
+/// Select the process-wide shell backend before its first use.
+#[cfg(feature = "standalone")]
+pub fn set_backend(shell_backend: &'static dyn ShellBackend) {
+    let _ = ACTIVE.set(shell_backend);
 }
 
 /// Helper for tests to toggle `autocd` behavior on the test/mock backend.

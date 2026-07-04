@@ -7,9 +7,9 @@
 
 #![allow(non_snake_case, dead_code, static_mut_refs)]
 
-use crate::bash_symbols::{
-    Alias, BashBuiltinType, BashInput, BufferedStream, CompSpec, FunctionDef, HistoryEntry,
-    ShellVar, StreamSaver, StreamType,
+use crate::shell::bash::symbols::{
+    Alias, BashBuiltinType, BashInput, BufferedStream, CompSpec, FunctionDef, HashTable,
+    HistoryEntry, ShellVar, StreamSaver, StreamType,
 };
 use libc::{c_char, c_int, c_uint, c_void, pid_t};
 
@@ -53,7 +53,7 @@ pub static mut stream_list: *mut StreamSaver = std::ptr::null_mut();
 pub static mut bash_input: BashInput = BashInput {
     stream_type: StreamType::None,
     name: std::ptr::null_mut(),
-    location: crate::bash_symbols::InputStreamLocation {
+    location: crate::shell::bash::symbols::InputStreamLocation {
         string: std::ptr::null_mut(),
     },
     getter: None,
@@ -64,8 +64,33 @@ pub static mut bash_input: BashInput = BashInput {
 pub static interactive: c_int = 1;
 #[unsafe(no_mangle)]
 pub static interactive_shell: c_int = 1;
+#[cfg(not(feature = "pre_bash_4_4"))]
+#[unsafe(no_mangle)]
+pub static autocd: c_int = 0;
 #[unsafe(no_mangle)]
 pub static no_line_editing: c_int = 0;
+
+#[unsafe(no_mangle)]
+pub static mut shell_functions: *mut HashTable = std::ptr::null_mut();
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn save_parser_state(
+    _state: *mut c_void,
+) -> *mut c_void {
+    std::ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn restore_parser_state(_state: *mut c_void) {}
+
+#[cfg(not(feature = "pre_bash_4_4"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn first_pending_trap() -> c_int {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn run_pending_traps() {}
 
 #[unsafe(no_mangle)]
 pub static mut rl_line_buffer: *mut c_char = std::ptr::null_mut();

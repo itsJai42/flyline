@@ -60,6 +60,10 @@ path = "tests/zsh_completion_tests.rs"
 name = "zsh_integration_tests"
 path = "tests/zsh_integration_tests.rs"
 
+[[test]]
+name = "fish_integration_tests"
+path = "tests/fish_integration_tests.rs"
+
 [dependencies]
 ansi-to-tui.workspace = true
 anyhow.workspace = true

@@ -7,8 +7,8 @@
 //!   1   — EOF or internal error
 
 use flyline::{
-    ExitState, LongLived, ZSH_BACKEND, get_command, init_standalone_logging, run_comp_broker,
-    set_backend, set_cloexec, settings,
+    ExitState, FISH_BACKEND, LongLived, ZSH_BACKEND, get_command, init_standalone_logging,
+    run_comp_broker, set_backend, set_cloexec, settings,
 };
 
 fn catch_unwind_safe<T>(f: impl FnOnce() -> T) -> Result<T, ()> {
@@ -36,14 +36,16 @@ fn run() -> i32 {
         return run_comp_broker(std::path::Path::new(&sock));
     }
 
-    // SAFETY: standalone is a fresh process; no other threads read these yet.
-    unsafe {
-        std::env::set_var("FLYLINE_HOST", "zsh");
-    }
     // Mark the fd 3 handoff pipe close-on-exec so helper grandchildren can't hold
     // it open and wedge the parent's `$( ... 3>&1 )` (write_command_fd3 still works).
     set_cloexec(3);
-    set_backend(&ZSH_BACKEND);
+    if std::env::var("FLYLINE_HOST").as_deref() == Ok("fish") {
+        set_backend(&FISH_BACKEND);
+    } else {
+        // SAFETY: standalone is a fresh process; no other threads read these yet.
+        unsafe { std::env::set_var("FLYLINE_HOST", "zsh") };
+        set_backend(&ZSH_BACKEND);
+    }
 
     if let Err(e) = init_standalone_logging() {
         eprintln!("flyline: failed to initialize logging: {e}");

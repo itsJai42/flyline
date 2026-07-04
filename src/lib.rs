@@ -22,6 +22,8 @@ mod agent_mode;
 mod app;
 #[cfg(not(test))]
 mod bash_builtin;
+#[cfg(feature = "standalone")]
+mod bash_stubs;
 mod changelog;
 mod cli;
 pub mod completions;
@@ -66,9 +68,11 @@ pub use app::{ExitState, get_command};
 #[cfg(feature = "standalone")]
 pub use settings::Settings;
 #[cfg(feature = "standalone")]
+pub use shell::fish::FISH_BACKEND;
+#[cfg(feature = "standalone")]
 pub use shell::zsh::{ZSH_BACKEND, run_comp_broker, set_cloexec};
 #[cfg(feature = "standalone")]
-pub use shell::{backend, is_zsh_host_env, set_backend};
+pub use shell::{backend, is_fish_host_env, is_zsh_host_env, set_backend};
 
 #[cfg(feature = "standalone")]
 pub fn init_standalone_logging() -> anyhow::Result<()> {

@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use crate::history::HistoryEntry;
 
@@ -123,7 +124,65 @@ pub mod test_backend;
 pub use test_backend::TestBackend;
 
 #[cfg(feature = "standalone")]
+pub mod fish;
+#[cfg(feature = "standalone")]
 pub mod zsh;
+
+pub(crate) fn run_with_timeout(bin: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    #[allow(clippy::disallowed_methods)]
+    std::thread::spawn(move || {
+        let mut output = String::new();
+        let _ = stdout.read_to_string(&mut output);
+        let _ = tx.send(output);
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = rx.recv().unwrap_or_default();
+                return status.success().then_some(output);
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => return None,
+        }
+    }
+}
+
+pub(crate) fn hostname_from_uname() -> String {
+    let mut buf = [0_u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc == 0 {
+        let end = buf.iter().position(|&byte| byte == 0).unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    } else {
+        String::new()
+    }
+}
+
+pub(crate) fn shell_var_name(name: &str) -> Option<&str> {
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_'))
+    .then_some(name)
+}
 
 /// The host shell that flyline is embedded in or driven by.
 ///
@@ -307,6 +366,11 @@ pub fn backend() -> &'static dyn ShellBackend {
 /// True when the standalone editor is hosted by zsh.
 pub fn is_zsh_host_env() -> bool {
     std::env::var("FLYLINE_HOST").as_deref() == Ok("zsh")
+}
+
+/// True when the standalone editor is hosted by fish.
+pub fn is_fish_host_env() -> bool {
+    std::env::var("FLYLINE_HOST").as_deref() == Ok("fish")
 }
 
 /// Select the process-wide shell backend before its first use.

@@ -613,11 +613,11 @@ flyline set-style bash-reserved="bold yellow"
 
 ## Keybindings
 
-List all keybindings with `flyline key list`.
-Flyline allows configurable keybindings with the `flyline key bind [KEY SEQUENCE] [CONTEXT_EXPR]=[ACTION]` subcommand.
-The context expression is a `+`-separated chain of camelCase context variables (each optionally prefixed with `!` to negate).
-A binding only fires when its context expression evaluates to true.
-This allows the same key sequence to trigger different actions under different circumstances.
+Flyline allows configurable keybindings with the `flyline key bind [KEY SEQUENCE] [CONTEXT_EXPR]=[ACTIONS]` subcommand:
+- `CONTEXT_EXPR` is a `+`-separated chain of **context variables** (each optionally prefixed with `!` to negate).
+- `ACTIONS` is a `+`-separated chain of **actions**.
+- A binding only fires when its **context expression** evaluates to true.
+- This allows the same key sequence to trigger different **actions** under different circumstances.
 
 For instance:
 ```bash
@@ -629,11 +629,27 @@ If `tabCompletionAvailable` is false, then it will try the next keybinding for `
 The `always` context variable is always true.
 For tab completion, `tabCompletionOneResult` is true when there is exactly one tab completion result.
 
+Flyline provides useful tab completions to help you write keybindings.
+
+#### List keybindings
+List all keybindings with `flyline key list`.
+List bindings for a single key event with: `flyline key list Ctrl+a`
+
+#### Context expressions
 A context expression may combine multiple variables with `+`:
 ```bash
 flyline key bind Tab inlineSuggestionAvailable+cursorAtEnd=inlineSuggestionAccept
 ```
+This will only trigger when *both* `inlineSuggestionAvailable` and `cursorAtEnd` are true.
 Use `!` in front of a variable to negate it (e.g. `!textSelected`). Parentheses are not supported. 
+
+#### Multiple actions
+Multiple actions can be dispatched from a single key event:
+```bash
+flyline key bind Ctrl+g always=clearBuffer+prevHistoryEntry+submitOrNewLine
+```
+
+#### Full key event remap
 
 It is possible to remap individual keys and full key events entirely with:
 ```bash
@@ -642,10 +658,12 @@ flyline key remap Alt Ctrl       # Pressing Alt now acts like pressing Ctrl
 flyline key remap Ctrl Alt       # With the above command, Alt and Ctrl are effectively swapped
 
 # Full key event
-flyline key remap Ctrl+p Up      # Pressing Ctrl+p will trigger any keybinding that Up would trigger
+flyline key remap Ctrl+P Up      # Pressing Ctrl+P will trigger any keybinding that Up would trigger
 ```
 
-Tab completions exist for both key sequences and context/action arguments to make it easier to write keybindings.
+Q: Why would you use key event remapping?
+
+A: Instead of manually duplicating multiple context-dependent bindings from `Up` to `Ctrl+P` , you can use key event remapping to redirect `Ctrl+p` to `Up`  globally.
 
 # Licensing
 

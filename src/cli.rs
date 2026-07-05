@@ -305,14 +305,8 @@ enum Commands {
         #[arg(long)]
         copy: bool,
     },
-    /// Dump all in-memory log entries to stdout.
-    #[command(name = "dump", verbatim_doc_comment)]
-    Dump {
-        /// Only show log entries from the last duration (e.g. 5s, 2m, 1h)
-        #[arg(long)]
-        last: Option<String>,
-    },
     /// Print a timestamp.
+
     ///
     /// With no flags, prints nanoseconds since the Unix epoch.
     /// With --format, formats the current local time using a Chrono strftime
@@ -990,26 +984,6 @@ impl Flyline {
                 match parsed.command {
                     Some(Commands::Version { copy }) => {
                         show_version(copy);
-                        return bash_symbols::BuiltinExitCode::ExecutionSuccess as c_int;
-                    }
-                    Some(Commands::Dump { last }) => {
-                        use std::io::Write;
-                        match crate::logging::get_filtered_logs(last.as_deref()) {
-                            Ok(entries) => {
-                                let stdout = std::io::stdout();
-                                let mut out = stdout.lock();
-                                for entry in entries {
-                                    if let Err(e) = writeln!(out, "{}", entry) {
-                                        eprintln!("Failed to write log entry: {}", e);
-                                        return bash_symbols::BuiltinExitCode::Usage as c_int;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to retrieve logs: {}", e);
-                                return bash_symbols::BuiltinExitCode::Usage as c_int;
-                            }
-                        }
                         return bash_symbols::BuiltinExitCode::ExecutionSuccess as c_int;
                     }
                     Some(Commands::AgentMode {

@@ -24,10 +24,12 @@ impl DrawnContent {
             + self.content_visible_row_range.start as isize
     }
 
-    pub fn term_em_cursor_pos(&self) -> Option<Position> {
+    pub fn frame_cursor_pos(&self) -> Option<Position> {
         self.contents.term_cursor_pos.map(|cursor_pos| Position {
             x: cursor_pos.col,
-            y: self.content_row_to_term_em_row(cursor_pos.row),
+            y: cursor_pos
+                .row
+                .saturating_sub(self.content_visible_row_range.start),
         })
     }
 
@@ -47,7 +49,10 @@ impl DrawnContent {
 
     pub fn get_tagged_cell(&self, term_em_x: u16, term_em_y: u16) -> Option<(Tag, Tag)> {
         let content_row = self.term_em_row_to_content_row(term_em_y);
-        if content_row < 0 {
+        if content_row < 0
+            || (content_row as u16) < self.content_visible_row_range.start
+            || (content_row as u16) >= self.content_visible_row_range.end
+        {
             return None;
         }
 
@@ -60,10 +65,9 @@ impl DrawnContent {
             direct_tag,
             Tag::Blank
                 | Tag::Normal
-                | Tag::Ps1Prompt
-                | Tag::Ps1PromptDynamicTime
-                | Tag::Ps1PromptAnimation
-                | Tag::Ps2Prompt
+                | Tag::Prompt
+                | Tag::PromptDynamicTime
+                | Tag::PromptAnimation
                 | Tag::TabSuggestion
                 | Tag::HistorySuggestion
                 | Tag::FuzzySearch
@@ -477,8 +481,7 @@ impl<'a> App<'a> {
             }
         }
 
-        if self.mode.is_running()
-            && self.settings.key_debug
+        if self.settings.key_debug
             && let Some(last_key) = &self.last_key
         {
             let actions_str = last_key
@@ -529,27 +532,24 @@ impl<'a> App<'a> {
                 true,
             );
 
-            let dummy = ("none".to_string(), "none".to_string());
-            let matches_iter = last_mouse
+            let (ctx, act) = last_mouse
                 .matches
-                .iter()
-                .chain(std::iter::repeat(&dummy))
-                .take(2);
+                .first()
+                .map(|(c, a)| (c.as_str(), a.as_str()))
+                .unwrap_or(("none", "none"));
 
-            for (ctx, act) in matches_iter {
-                content.write_tagged_line(
-                    &TaggedLine::from_line(
-                        Line::from(format!("       context: {}  action: {}", ctx, act)).style(
-                            self.settings
-                                .colour_palette
-                                .secondary_text()
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Tag::Normal,
+            content.write_tagged_line(
+                &TaggedLine::from_line(
+                    Line::from(format!("       context: {}  action: {}", ctx, act)).style(
+                        self.settings
+                            .colour_palette
+                            .secondary_text()
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    true,
-                );
-            }
+                    Tag::Normal,
+                ),
+                true,
+            );
         }
 
         content.prompt_start = Some(content.cursor_position());
@@ -606,7 +606,7 @@ impl<'a> App<'a> {
         {
             for line in &mut lprompt {
                 for span in &mut line.spans {
-                    if span.tag == SpanTag::Constant(Tag::Ps1PromptCwdWidget(cwd_index)) {
+                    if span.tag == SpanTag::Constant(Tag::PromptCwdWidget(cwd_index)) {
                         span.span.style = Palette::convert_to_highlighted(span.span.style);
                     }
                 }
@@ -615,14 +615,14 @@ impl<'a> App<'a> {
 
         // Apply hover/depress styling to whichever CWD segment the mouse is over.
         if self.mode.is_running()
-            && let Some(Tag::Ps1PromptCwdWidget(hovered_idx)) =
+            && let Some(Tag::PromptCwdWidget(hovered_idx)) =
                 self.mouse_state.last_mouse_over_cell_semantic
         {
-            let cwd_state = self.button_state_for(Tag::Ps1PromptCwdWidget(hovered_idx));
+            let cwd_state = self.button_state_for(Tag::PromptCwdWidget(hovered_idx));
             if !matches!(cwd_state, ButtonState::Normal) {
                 for line in &mut lprompt {
                     for span in &mut line.spans {
-                        if span.tag == SpanTag::Constant(Tag::Ps1PromptCwdWidget(hovered_idx)) {
+                        if span.tag == SpanTag::Constant(Tag::PromptCwdWidget(hovered_idx)) {
                             span.span.style =
                                 Palette::apply_button_style(span.span.style, cwd_state);
                         }
@@ -639,7 +639,7 @@ impl<'a> App<'a> {
             if is_last {
                 content.write_tagged_line_lrjustified(
                     tagged_l,
-                    &TaggedLine::from_line(Line::from(" "), Tag::Ps1Prompt),
+                    &TaggedLine::from_line(Line::from(" "), Tag::Prompt),
                     tagged_r,
                     true,
                 );
@@ -703,13 +703,14 @@ impl<'a> App<'a> {
             if part.token.token.kind == TokenKind::Newline {
                 line_idx += 1;
                 content.newline();
-                let line_num_str = format!("{}", line_idx + 1);
-                let padded_line_num = format!("{:>width$}", line_num_str, width = max_digits);
-                let ps2 = Span::styled(
-                    format!("{}∙", padded_line_num),
-                    self.settings.colour_palette.secondary_text(),
+                let ps2_spans = self.prompt_manager.get_ps2(
+                    line_idx + 1,
+                    max_digits,
+                    self.settings.show_animations,
                 );
-                content.write_tagged_span(&TaggedSpan::new(ps2, Tag::Ps2Prompt));
+                for span in ps2_spans {
+                    content.write_tagged_span(&span);
+                }
             }
         }
         if self.formatted_buffer_cache.draw_cursor_at_end {
@@ -735,7 +736,9 @@ impl<'a> App<'a> {
             && let Some(cursor_pos) = cursor_pos_maybe
         {
             self.cursor.update_logical_pos(cursor_pos);
-            let cursor_render_pos = if self.settings.show_animations {
+            let cursor_render_pos = if self.settings.show_animations
+                && self.settings.cursor_config.backend() != CursorBackend::Terminal
+            {
                 self.cursor.get_render_pos(&self.settings.cursor_config)
             } else {
                 cursor_pos
@@ -932,19 +935,13 @@ impl<'a> App<'a> {
             ContentMode::TabCompletionAskForFlycomp {
                 command_word,
                 selection,
-                sandbox,
                 dump_path,
                 ..
             } if self.mode.is_running() => {
                 content.newline();
-                let (sandbox_word, sandbox_msg) = if let Some(ref s) = *sandbox {
-                    ("sandboxed", s.as_str())
-                } else {
-                    (
-                        "unsandboxed",
-                        "bubblewrap (bwrap) not found in PATH; running completion check unsandboxed.",
-                    )
-                };
+                let sandbox_status = self.settings.flycomp.sandbox_status();
+                let sandbox_word = sandbox_status.label();
+                let sandbox_msg = sandbox_status.description();
 
                 let hover =
                     self.mouse_state.last_mouse_over_cell_semantic == Some(Tag::FlycompSandboxInfo);
@@ -1351,6 +1348,7 @@ impl<'a> App<'a> {
                         cmd.len(),
                         false,
                         &self.settings.colour_palette,
+                        self.settings.enable_easter_eggs,
                     );
                     for part in &formatted_cmd.parts {
                         if matches!(part.token.token.kind, TokenKind::Newline) {
@@ -1442,20 +1440,18 @@ impl<'a> App<'a> {
                     RightClickCopyTarget::Buffer(_) => "⎘ Copy (buffer)".to_string(),
                     RightClickCopyTarget::HistoryEntry(_) => "⎘ Copy (history entry)".to_string(),
                     RightClickCopyTarget::Cwd(_) => "⎘ Copy (cwd)".to_string(),
+                    RightClickCopyTarget::Suggestion(_) => "⎘ Copy (suggestion)".to_string(),
+                    RightClickCopyTarget::AiResult(_) => "⎘ Copy (AI result)".to_string(),
+                    RightClickCopyTarget::Clipboard(_) => "⎘ Copy (clipboard)".to_string(),
                 }
             } else {
                 "⎘ Copy".to_string()
             };
 
-            let cut_label = if let Some(ref target) = self.right_click_copy_target {
-                match target {
-                    RightClickCopyTarget::Selection(_) => "✂ Cut (selection)".to_string(),
-                    RightClickCopyTarget::Buffer(_) => "✂ Cut (buffer)".to_string(),
-                    RightClickCopyTarget::HistoryEntry(_) => "✂ Cut (history entry)".to_string(),
-                    RightClickCopyTarget::Cwd(_) => "✂ Cut (cwd)".to_string(),
-                }
+            let cut_label = if self.buffer.selected_text().is_some() {
+                "✂ Cut (selection)".to_string()
             } else {
-                "✂ Cut".to_string()
+                "✂ Cut (buffer)".to_string()
             };
 
             let entries = [
@@ -1506,7 +1502,13 @@ impl<'a> App<'a> {
 
         content
     }
-    pub(crate) fn ui(&mut self, frame: &mut Frame, content: Contents) {
+    pub(crate) fn ui(
+        frame: &mut Frame,
+        content: Contents,
+        needs_full_redraw: bool,
+        show_terminal_cursor: bool,
+        viewport_top_row: u16,
+    ) -> DrawnContent {
         let frame_area = frame.area();
         frame.buffer_mut().reset();
 
@@ -1520,9 +1522,12 @@ impl<'a> App<'a> {
                 Some(row) => {
                     for (x, tagged_cell) in row.iter().enumerate() {
                         if x < frame_area.width as usize {
+                            let mut cell = tagged_cell.cell.clone();
+                            if needs_full_redraw {
+                                cell.set_diff_option(ratatui::buffer::CellDiffOption::AlwaysUpdate);
+                            }
                             frame.buffer_mut().content
-                                [row_idx as usize * frame_area.width as usize + x] =
-                                tagged_cell.cell.clone();
+                                [row_idx as usize * frame_area.width as usize + x] = cell;
                         }
                     }
                 }
@@ -1532,24 +1537,17 @@ impl<'a> App<'a> {
 
         let drawn_content = DrawnContent {
             contents: content,
-            viewport_start: frame_area.y,
+            viewport_start: viewport_top_row,
             content_visible_row_range,
         };
 
-        if let Some(term_em_cursor) = drawn_content.term_em_cursor_pos()
-            && (self.settings.cursor_config.backend() == CursorBackend::Terminal
-                || !self.mode.is_running())
-            && !(self.mouse_state.is_left_button_down()
-                && self.buffer.selection_range().is_some()
-                && matches!(
-                    self.mouse_state.last_mouse_over_cell_semantic,
-                    Some(Tag::Command(_))
-                ))
-        {
-            frame.set_cursor_position(term_em_cursor);
+        if show_terminal_cursor {
+            if let Some(frame_cursor) = drawn_content.frame_cursor_pos() {
+                frame.set_cursor_position(frame_cursor);
+            }
         }
 
-        self.last_contents = Some(drawn_content);
+        drawn_content
     }
 
     fn render_user_suggestions(

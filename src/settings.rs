@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::app::actions;
 use crate::content_builder::TaggedSpan;
@@ -104,10 +104,15 @@ pub enum PromptWidget {
         /// Text shown when the leader key is inactive.
         inactive_text: String,
     },
+    /// Widget that displays the line number for multi-line continuation prompt.
+    BufferLineNumber {
+        /// Name used as placeholder in prompt strings (e.g., `FLYLINE_PROMPT_LINE_NUMBER`).
+        name: String,
+    },
 }
 
 impl PromptWidget {
-    /// The placeholder name that is replaced inside prompt strings (PS1, RPS1, PS1_FILL).
+    /// The placeholder name that is replaced inside prompt strings (PS1, RPS1, PS1_FILL, PS2).
     pub fn name(&self) -> &str {
         match self {
             PromptWidget::MouseMode { name, .. } => name,
@@ -115,6 +120,7 @@ impl PromptWidget {
             PromptWidget::Custom(w) => &w.name,
             PromptWidget::LastCommandDuration { name } => name,
             PromptWidget::LeaderMode { name, .. } => name,
+            PromptWidget::BufferLineNumber { name } => name,
         }
     }
 }
@@ -219,11 +225,8 @@ pub struct Settings {
     pub show_inline_history: bool,
     /// Whether to auto-start tab completion suggestions as you type.
     pub auto_suggest: bool,
-    /// Whether to use flycomp to synthesize completions.
-    pub use_flycomp: bool,
-    /// Optional path to the directory where flycomp output is saved.
-    /// When `None`, defaults to `~/.local/share/bash-completion/completions/`.
-    pub flycomp_output: Option<String>,
+    /// Settings for flycomp shell completion synthesis.
+    pub flycomp: flycomp::FlycompSettings,
     /// How to sort suggestions when fuzzy scores are tied.
     pub suggestion_sort_order: SuggestionSortOrder,
     /// Controls fuzzy matching behavior for suggestions.
@@ -260,8 +263,9 @@ pub struct Settings {
     /// events on terminals that support the protocol; disable it if your
     /// terminal misbehaves when the request is sent. Enabled by default.
     pub enable_extended_key_codes: bool,
-    /// Blacklist of command words for which flycomp prompt should be bypassed.
-    pub flycomp_blacklist: HashSet<String>,
+    /// Whether easter eggs (such as animated command words like `python`) are enabled.
+    /// Enabled by default; pass `--enable-easter-eggs false` to disable.
+    pub enable_easter_eggs: bool,
     /// Configurable colour palette for UI elements.
     pub colour_palette: Palette,
     /// User defined keybindings
@@ -319,8 +323,7 @@ impl Default for Settings {
             tutorial_step: TutorialStep::default(),
             show_animations: true,
             auto_suggest: true,
-            use_flycomp: true,
-            flycomp_output: None,
+            flycomp: flycomp::FlycompSettings::default(),
             suggestion_sort_order: SuggestionSortOrder::default(),
             fuzzy_mode: FuzzyMode::default(),
             num_suggestion_rows: 15,
@@ -336,7 +339,7 @@ impl Default for Settings {
             frame_rate: 24,
             send_shell_integration_codes: ShellIntegrationLevel::default(),
             enable_extended_key_codes: true,
-            flycomp_blacklist: HashSet::default(),
+            enable_easter_eggs: true,
             colour_palette: Palette::default(),
             keybindings: Vec::default(),
             key_remappings: Vec::default(),

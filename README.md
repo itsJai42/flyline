@@ -3,7 +3,6 @@
 <div align="center">
 
 [![CI](https://github.com/HalFrgrd/flyline/actions/workflows/ci.yml/badge.svg)](https://github.com/HalFrgrd/flyline/actions/workflows/ci.yml)
-![Downloads](https://img.shields.io/github/downloads/halfrgrd/flyline/total)
 [![Latest Release](https://img.shields.io/github/v/release/HalFrgrd/flyline)](https://github.com/HalFrgrd/flyline/releases)
 [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 
@@ -136,6 +135,15 @@ sh install.sh --uninstall   # remove conf.d/flyline.fish, flyline-standalone, an
 - **Abbreviations don't expand inline.** `abbr` expansions are shown as alias tooltips and used for completion lookup, but typing an abbreviation in flyline inserts it literally.
 - **fish's prompt-time terminal queries are disabled while flyline is on.** fish 4.x sends blocking terminal queries (cursor position, background color) around each prompt and hard-`assert!`s if one is still pending when the next is issued (`reader.rs`, `query.is_none()`) — a TUI taking the tty from a `fish_prompt` handler consumes the reply under real terminal latency and crashes fish itself (reproduced with ≥300ms reply lag; guarded by a regression test). The widget therefore sets `FISH_TEST_NO_RECURRENT_QUERIES` while enabled and clears it on `flyline_disable`. Practical cost: fish's automatic light/dark background detection pauses while flyline is active. Accepted lines execute via a signal-deferred `commandline -f execute` (with queries off, fish's reader only drains queued readline functions when woken).
 
+### Homebrew
+
+On macOS and Linux, you can install via [Homebrew](https://formulae.brew.sh/formula/flyline):
+
+```bash
+brew install bash # Needed if you only have default macOS bash installed
+brew install flyline
+```
+
 ### Arch Linux
 
 Arch users can install the [AUR package](https://aur.archlinux.org/packages/flyline):
@@ -199,7 +207,7 @@ Explore this README and [examples](examples/) for what you can configure.
 
 # Rich prompts
 
-Flyline supports dynamic content in `PS1`, `RPS1` / `RPROMPT`, and `PS1_FILL`.
+Flyline supports dynamic content in `PS1`, `RPS1` / `RPROMPT`, `PS1_FILL`, and `PS2`.
 
 ## PS1
 The `PS1` environment variable sets the left prompt just like normal. See [Bash prompt documentation](https://www.gnu.org/software/bash/manual/html_node/Controlling-the-Prompt.html), [Arch Linux wiki](https://wiki.archlinux.org/title/Bash/Prompt_customization), or [Starship](https://starship.rs/) for more information.
@@ -230,6 +238,22 @@ PS1_FILL='-'
 PS1_FILL='🯁🯂🯃🮲🮳' # finger pointing to running man
 PS1_FILL='🯁🯂🯃🮲🮳 \D{%.3f}'
 ```
+
+## PS2
+The `PS2` environment variable configures the multi-line continuation prompt.
+`FLYLINE_PROMPT_LINE_NUMBER` will be replaced by the line number:
+[![PS2 demo](https://github.com/HalFrgrd/flyline/releases/download/assets/demo_prompts_ps2.gif)](https://github.com/HalFrgrd/evp)
+```bash
+# Styled line numbers with ANSI color
+PS2='\e[2mFLYLINE_PROMPT_LINE_NUMBER>\e[0m '
+
+# Custom prompt prefix with line numbers
+PS2='\e[2mline FLYLINE_PROMPT_LINE_NUMBER:\e[0m '
+
+# If you do want the default '> ' prompt, then you want:
+PS2='\e[0m> '
+```
+
 
 ## Final (transient) prompts
 `PS1_FINAL`, `RPS1_FINAL`, and `PS1_FILL_FINAL` let you configure transient prompts. When a command is submitted, Flyline performs a final redraw using these environment variables instead of their standard counterparts. This keeps your terminal scrollback history clean by replacing complex, multi-line prompts with a minimal version.
@@ -513,6 +537,8 @@ If a command lacks a completion script, flyline can invoke [flycomp](https://git
 
 [![Automatic completion synthesis demo](https://github.com/HalFrgrd/flyline/releases/download/assets/demo_flycomp.gif)](https://github.com/HalFrgrd/evp)
 
+Flycomp settings are configurable with `flyline suggestions flycomp ...`.
+
 ### `LS_COLORS` styling
 Flyline styles your filename tab completion results according to `$LS_COLORS`:
 
@@ -558,6 +584,15 @@ flyline set-cursor --help
 ```
 
 # Terminal emulator notes
+
+Flyline makes use modern terminal features / escape codes.
+I'd recommend a feature complete terminal emulator like Ghostty or Kitty.
+You can check https://vtdn.dev/ to see what features your terminal emulator / multiplexer supports.
+
+## Ghostty
+I recommend setting `cursor-click-to-move = false`.
+When this is `true`, incorrect mouse events are sent to flyline.
+
 ## Kitty:
 When running inside Kitty, it is highly recommended to use the terminal cursor backend:
 ```bash
@@ -637,7 +672,7 @@ Options:
 
       --show-animations [<SHOW_ANIMATIONS>]
           Show animations
-          
+
           [possible values: true, false]
 
       --matrix-animation [<MATRIX_ANIMATION>]
@@ -656,6 +691,11 @@ Options:
 
       --enable-extended-key-codes [<ENABLE_EXTENDED_KEY_CODES>]
           Whether to request the use of extended (kitty-protocol) keyboard codes during startup. Enabled by default; pass `--enable-extended-key-codes false` to disable it on terminals that misbehave when the request is sent
+
+          [possible values: true, false]
+
+      --enable-easter-eggs [<ENABLE_EASTER_EGGS>]
+          Whether easter eggs (such as animated command words like `python`) are enabled. Enabled by default; pass `--enable-easter-eggs false` to disable
           
           [possible values: true, false]
 
@@ -792,6 +832,65 @@ flyline create-prompt-widget leader-mode --name FLYLINE_LEADER_MODE 'LEADER' ''
 
 # And include it in your `PS1`/`RPS1`/`PS1_FILL`:
 export RPS1='FLYLINE_LEADER_MODE'
+```
+
+# Integration with third party apps
+> [!CAUTION]
+> This an experimental feature and might change. Feedback welcome
+
+Flyline completely replaces readline so other TUIs that help you write commands don't work immediately.
+
+Flyline has a special action that will:
+- pause flyline then
+- run your program then
+- wait for it to finish (keyboard / mouse are handled by your program) then
+- flyline resumes and update the buffer based on `READLINE_LINE`, `READLINE_POINT`, and `READLINE_MARK`.
+
+## Atuin
+```bash
+eval "$(atuin init bash)"
+flyline key bind Ctrl+r 'always=runBashCommand(__atuin_widget_run)+submitOrNewline'
+flyline key bind Up 'editingBufferMode+cursorOnFirstLine=runBashCommand("__atuin_history --shell-up-key-binding --keymap-mode=emacs")+submitOrNewline'
+flyline key bind '?' 'editingBufferMode+bufferIsEmpty=runBashCommand(_atuin_ai_question_mark)'
+```
+
+## fzf
+```bash
+eval "$(fzf --bash)"
+
+flyline_fzf_cd() {
+    local cmd
+    cmd=$(__fzf_cd__) && READLINE_LINE="$cmd" READLINE_POINT=${#cmd}
+}
+
+flyline key bind Ctrl+r 'always=runBashCommand(__fzf_history__)' # or runBashCommand(__fzf_history__)+submitOrNewline
+flyline key bind Ctrl+t 'always=runBashCommand(fzf-file-widget)'
+flyline key bind Alt+c  'always=runBashCommand(flyline_fzf_cd)+submitOrNewline'
+```
+
+## Custom
+
+```bash
+# 1. Define the function
+my_custom_function() {
+    local line="$READLINE_LINE"
+    local point="${READLINE_POINT:-0}"
+    local mark="${READLINE_MARK:-0}"
+
+    local start=$(( point < mark ? point : mark ))
+    local end=$(( point > mark ? point : mark ))
+    local len=$(( end - start ))
+
+    local selected="${line:start:len}"
+    local prefix="this part was selected: "
+
+    READLINE_LINE="${prefix}${selected}"
+    READLINE_MARK=${#prefix}
+    READLINE_POINT=$(( ${#prefix}  + ${#selected}  ))
+}
+
+# 2. Bind it to a key combination (e.g., Ctrl+b)
+flyline key bind Ctrl+b 'always=runBashCommand(my_custom_function)'
 ```
 
 # Licensing

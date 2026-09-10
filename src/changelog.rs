@@ -1,5 +1,21 @@
 pub(crate) const CHANGELOG: &str = r#"# Changelog
 
+## v1.5.0
+- **Termina Backend**: Switched terminal rendering backend to `termina` for enhanced event handling and precise UI rendering.
+- **Enhanced Mouse Selection & UX**: Added triple-click line selection, quad-click buffer selection, click-and-drag suggestion selection, and isolated scrolling movements.
+- **Platform & Packaging Support**: Added Android/Termux installation support, a declarative NixOS module, and Homebrew installation documentation.
+- **Binary Size & Build Optimization**: Reduced binary size by ~1.3MB by switching to `regex-lite` and improved Arch Linux LTO build options.
+- **Agent & Subprocess Stability**: Fixed `SIGCHLD` signal handler reset behavior when spawning agent command substitutions to prevent process reaping errors (`ECHILD`).
+- **Parsing & Completion Fixes**: Improved square bracket autoclosing, unterminated function acceptance, `autocd` directory path command recognition, quote space-suffix handling, and resolved `extglob` parsing issues.
+
+## v1.4.0
+- **Inline Viewport Smooth Height**: Viewport height pre-allocates to available space down to the bottom of the screen without scrolling up, eliminating viewport resize flicker when opening popups.
+- **Third-Party Integration**: Enhanced support and terminal state synchronization for third-party tools (Atuin, FZF).
+- **Customizable PS2**: Added support for customizable PS2 multi-line prompt rendering.
+- **Packaging & Build Systems**: Added Nix flake packaging, Arch Linux build fixes, and `SOURCE_DATE_EPOCH` support for reproducible build timestamps.
+- **Settings & Config**: Exposed Flycomp settings in Flyline and added options to disable easter eggs.
+- **Bug Fixes & Stability**: Resolved PATH scan lock contention, zero-width terminal suggestion popup panics, and unterminated quote auto-newline insertion.
+
 ## v1.3.0
 - **Leader Keys**: Added support for chorded keybinding sequences (e.g., `Ctrl+x` followed by `Ctrl+f`) via the new `setLeaderKey` and `unsetLeaderKey` actions and the `leaderKeyActive` context variable.
 - **Leader Key Visual Feedback**: Introduced the `leader-mode` prompt widget to display visual indicators (like ` X `) in the prompt when the leader key state is active.

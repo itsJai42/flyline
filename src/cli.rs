@@ -103,6 +103,10 @@ struct FlylineArgs {
     /// disable it on terminals that misbehave when the request is sent.
     #[arg(long = "enable-extended-key-codes", default_missing_value = "true", num_args = 0..=1)]
     enable_extended_key_codes: Option<bool>,
+    /// Whether easter eggs (such as animated command words like `python`) are enabled.
+    /// Enabled by default; pass `--enable-easter-eggs false` to disable.
+    #[arg(long = "enable-easter-eggs", default_missing_value = "true", num_args = 0..=1)]
+    enable_easter_eggs: Option<bool>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -564,7 +568,12 @@ enum Commands {
         #[arg(long = "auto-suggest", default_missing_value = "true", num_args = 0..=1)]
         auto_suggest: Option<bool>,
         /// Enable or disable flycomp for synthesizing shell completions when no useful compspec is found.
-        #[arg(long = "use-flycomp", default_missing_value = "true", num_args = 0..=1)]
+        #[arg(
+            long = "use-flycomp",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            hide = true
+        )]
         use_flycomp: Option<bool>,
         /// How to sort suggestions when fuzzy scores are tied (mtime, alphabetical).
         #[arg(long = "sort-order", value_name = "ORDER")]
@@ -574,10 +583,10 @@ enum Commands {
         num_suggestion_rows: Option<u16>,
         /// Directory where flycomp output should be saved.
         /// You should source the completions from this directory in your bashrc so flyline can use them next time.
-        #[arg(long = "flycomp-output", value_name = "DIR")]
+        #[arg(long = "flycomp-output", value_name = "DIR", hide = true)]
         flycomp_output: Option<String>,
         /// Blacklist of command words for which flycomp prompt should be bypassed.
-        #[arg(long = "flycomp-blacklist", value_name = "COMMANDS", num_args = 1..)]
+        #[arg(long = "flycomp-blacklist", value_name = "COMMANDS", num_args = 1.., hide = true)]
         flycomp_blacklist: Option<Vec<String>>,
     },
     /// Configure mouse options and debugging.
@@ -622,6 +631,9 @@ enum SuggestionsSubcommands {
         #[arg(value_name = "MODE")]
         mode: settings::FuzzyMode,
     },
+    /// Configure flycomp settings.
+    #[command(name = "flycomp", verbatim_doc_comment)]
+    Flycomp(flycomp::FlycompSettings),
 }
 
 #[derive(Subcommand, Debug)]
@@ -935,6 +947,7 @@ enum PromptWidgetSubcommands {
 }
 impl Flyline {
     pub(crate) fn call(&mut self, words: *const bash_symbols::WordList) -> c_int {
+        let _sigchld_guard = crate::SigchldGuard::new();
         let mut args = vec![];
         unsafe {
             let mut current = words;
@@ -997,6 +1010,11 @@ impl Flyline {
                 if let Some(enabled) = parsed.enable_extended_key_codes {
                     log::info!("Extended keyboard codes enabled: {}", enabled);
                     self.settings.enable_extended_key_codes = enabled;
+                }
+
+                if let Some(enabled) = parsed.enable_easter_eggs {
+                    log::info!("Easter eggs enabled: {}", enabled);
+                    self.settings.enable_easter_eggs = enabled;
                 }
 
                 match parsed.command {
@@ -1289,66 +1307,70 @@ impl Flyline {
                         }
                     }
                     None => {}
-                    Some(Commands::Log { subcommand }) => {
-                        match subcommand {
-                            LogSubcommands::Dump { last } => {
-                                match crate::logging::get_filtered_logs(last.as_deref()) {
-                                    Ok(entries) => {
-                                        use std::io::Write;
-                                        let stdout = std::io::stdout();
-                                        let mut out = stdout.lock();
-                                        for entry in entries {
-                                            if let Err(e) = writeln!(out, "{}", entry) {
-                                                eprintln!("Failed to write log entry: {}", e);
-                                            }
+                    Some(Commands::Log { subcommand }) => match subcommand {
+                        LogSubcommands::Dump { last } => {
+                            match crate::logging::get_filtered_logs(last.as_deref()) {
+                                Ok(entries) => {
+                                    use std::io::Write;
+                                    let stdout = std::io::stdout();
+                                    let mut out = stdout.lock();
+                                    for entry in entries {
+                                        if let Err(e) = writeln!(out, "{}", entry) {
+                                            eprintln!("Failed to write log entry: {}", e);
                                         }
                                     }
-                                    Err(e) => {
-                                        eprintln!("Failed to retrieve logs: {}", e);
-                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to retrieve logs: {}", e);
                                 }
                             }
-                            LogSubcommands::Copy { last } => {
-                                match crate::logging::get_filtered_logs(last.as_deref()) {
-                                    Ok(entries) => {
-                                        let len = entries.len();
-                                        let logs_to_copy = if len > 10_000 {
-                                            entries[len - 10_000..].to_vec()
-                                        } else {
-                                            entries
-                                        };
-                                        let joined_logs = logs_to_copy.join("\n");
-                                        if let Err(e) = crossterm::execute!(
-                                        std::io::stdout(),
-                                        crossterm::clipboard::CopyToClipboard::to_clipboard_from(joined_logs)
+                        }
+                        LogSubcommands::Copy { last } => {
+                            match crate::logging::get_filtered_logs(last.as_deref()) {
+                                Ok(entries) => {
+                                    let len = entries.len();
+                                    let logs_to_copy = if len > 10_000 {
+                                        entries[len - 10_000..].to_vec()
+                                    } else {
+                                        entries
+                                    };
+                                    let joined_logs = logs_to_copy.join("\n");
+                                    if let Err(e) = crate::flush_stdout!(
+                                        "{}",
+                                        termina::escape::osc::Osc::SetSelection(
+                                            termina::escape::osc::Selection::CLIPBOARD,
+                                            &joined_logs
+                                        )
                                     ) {
-                                        eprintln!("Failed to copy logs to clipboard via OSC 52: {}", e);
+                                        eprintln!(
+                                            "Failed to copy logs to clipboard via OSC 52: {}",
+                                            e
+                                        );
                                     } else {
                                         println!("Copied {} log lines!", logs_to_copy.len());
                                     }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Failed to retrieve logs: {}", e);
-                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to retrieve logs: {}", e);
                                 }
                             }
-                            LogSubcommands::SetLevel { level } => {
-                                let filter = log::LevelFilter::from(level);
-                                log::set_max_level(filter);
-                                log::info!("Log level set to {:?}", filter);
-                            }
-                            LogSubcommands::Stream { dest } => match logging::stream_logs(&dest) {
-                                Ok(()) => {
-                                    if dest == "terminal" {
-                                        log::info!("Log streaming to terminal");
-                                    } else {
-                                        println!("Flyline logs streaming to {}", dest);
-                                    }
-                                }
-                                Err(e) => eprintln!("Failed to stream logs: {}", e),
-                            },
                         }
-                    }
+                        LogSubcommands::SetLevel { level } => {
+                            let filter = log::LevelFilter::from(level);
+                            log::set_max_level(filter);
+                            log::info!("Log level set to {:?}", filter);
+                        }
+                        LogSubcommands::Stream { dest } => match logging::stream_logs(&dest) {
+                            Ok(()) => {
+                                if dest == "terminal" {
+                                    log::info!("Log streaming to terminal");
+                                } else {
+                                    println!("Flyline logs streaming to {}", dest);
+                                }
+                            }
+                            Err(e) => eprintln!("Failed to stream logs: {}", e),
+                        },
+                    },
                     Some(Commands::RunTutorial { enabled }) => {
                         let enabled = enabled.unwrap_or(true);
                         log::info!("Run tutorial set to {}", enabled);
@@ -1356,10 +1378,11 @@ impl Flyline {
                         if enabled {
                             self.settings.tutorial_step = tutorial::TutorialStep::Welcome;
                             // clear the terminal:
-                            if let Err(e) = crossterm::execute!(
-                                std::io::stdout(),
-                                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-                                crossterm::cursor::MoveTo(0, 0)
+                            use termina::escape::csi::{Csi, Cursor, Edit, EraseInDisplay};
+                            if let Err(e) = crate::flush_stdout!(
+                                "{}{}",
+                                Csi::Edit(Edit::EraseInDisplay(EraseInDisplay::EraseDisplay)),
+                                Csi::Cursor(Cursor::goto(0, 0))
                             ) {
                                 log::warn!("Failed to clear terminal: {}", e);
                             }
@@ -1400,11 +1423,15 @@ impl Flyline {
                                     log::info!("Fuzzy mode set to {:?}", mode);
                                     self.settings.fuzzy_mode = mode;
                                 }
+                                SuggestionsSubcommands::Flycomp(opts) => {
+                                    log::info!("Flycomp settings updated: {:?}", opts);
+                                    self.settings.flycomp.update(opts);
+                                }
                             }
                         }
                         if let Some(list) = flycomp_blacklist {
                             log::info!("Flycomp blacklist set to {:?}", list);
-                            self.settings.flycomp_blacklist = list.into_iter().collect();
+                            self.settings.flycomp.blacklist = Some(list);
                         }
                         if let Some(enabled) = auto_suggest {
                             log::info!("Auto tab-completion suggestions set to {}", enabled);
@@ -1412,7 +1439,7 @@ impl Flyline {
                         }
                         if let Some(enabled) = use_flycomp {
                             log::info!("Use flycomp set to {}", enabled);
-                            self.settings.use_flycomp = enabled;
+                            self.settings.flycomp.enabled = Some(enabled);
                         }
                         if let Some(order) = sort_order {
                             log::info!("Suggestion sort order set to {:?}", order);
@@ -1429,7 +1456,7 @@ impl Flyline {
                         }
                         if let Some(path) = flycomp_output {
                             log::info!("Flycomp output directory set to '{}'", path);
-                            self.settings.flycomp_output = Some(path);
+                            self.settings.flycomp.output_dir = Some(path);
                         }
                     }
                     Some(Commands::Time { format }) => {
@@ -1916,14 +1943,27 @@ fn show_version(copy: bool) {
     println!("{}", version_text);
 
     if copy {
-        if let Err(e) = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::clipboard::CopyToClipboard::to_clipboard_from(version_text)
+        if let Err(e) = crate::flush_stdout!(
+            "{}",
+            termina::escape::osc::Osc::SetSelection(
+                termina::escape::osc::Selection::CLIPBOARD,
+                &version_text
+            )
         ) {
             log::error!("Failed to copy version text to clipboard via OSC 52: {}", e);
         }
         println!();
-        println!("\x1b[32mCopied to clipboard!\x1b[0m");
+        if !termina::style::Stylized::is_ansi_color_disabled() {
+            use termina::escape::csi::{Csi, Sgr};
+            use termina::style::ColorSpec;
+            println!(
+                "{}Copied to clipboard!{}",
+                Csi::Sgr(Sgr::Foreground(ColorSpec::GREEN)),
+                Csi::Sgr(Sgr::Reset)
+            );
+        } else {
+            println!("Copied to clipboard!");
+        }
     }
 }
 
@@ -1998,5 +2038,79 @@ mod tests {
         assert!(!os_info.is_empty());
         assert!(!cpu_info.is_empty());
         assert!(!bash_ver.is_empty());
+    }
+
+    #[test]
+    fn test_flyline_suggestions_flycomp_cli_parse() {
+        let raw_cmd = "flyline suggestions ";
+        let wuc = "";
+        let cursor_byte = raw_cmd.len();
+        let comps = complete_flyline_args(raw_cmd, wuc, cursor_byte).unwrap();
+        let values: Vec<String> = comps
+            .into_iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+        assert!(values.contains(&"flycomp".to_string()));
+
+        let args = FlylineArgs::try_parse_from([
+            "flyline",
+            "suggestions",
+            "flycomp",
+            "--enabled",
+            "false",
+            "--strategy",
+            "run-help",
+            "--sandbox",
+            "false",
+            "--timeout-ms",
+            "8000",
+            "--recurse-limit",
+            "4",
+            "--output-dir",
+            "/tmp/completions",
+            "--blacklist",
+            "git",
+            "cargo",
+        ])
+        .unwrap();
+
+        let mut settings = settings::Settings::default();
+        if let Some(Commands::Suggestions {
+            subcommand: Some(SuggestionsSubcommands::Flycomp(opts)),
+            ..
+        }) = args.command
+        {
+            settings.flycomp.update(opts);
+        } else {
+            panic!("Expected SuggestionsSubcommands::Flycomp");
+        }
+
+        assert_eq!(settings.flycomp.enabled(), false);
+        assert_eq!(
+            settings.flycomp.strategy(),
+            flycomp::SynthesisStrategy::RunHelp
+        );
+        assert_eq!(settings.flycomp.sandbox(), false);
+        assert_eq!(settings.flycomp.timeout_ms(), 8000);
+        assert_eq!(settings.flycomp.recurse_limit(), 4);
+        assert_eq!(settings.flycomp.output_dir(), Some("/tmp/completions"));
+        assert!(settings.flycomp.is_blacklisted("git"));
+        assert!(settings.flycomp.is_blacklisted("cargo"));
+        assert!(!settings.flycomp.is_blacklisted("vim"));
+    }
+
+    #[test]
+    fn test_flyline_enable_easter_eggs_parse() {
+        let args =
+            FlylineArgs::try_parse_from(["flyline", "--enable-easter-eggs", "false"]).unwrap();
+        assert_eq!(args.enable_easter_eggs, Some(false));
+
+        let args_true =
+            FlylineArgs::try_parse_from(["flyline", "--enable-easter-eggs", "true"]).unwrap();
+        assert_eq!(args_true.enable_easter_eggs, Some(true));
+
+        let args_default =
+            FlylineArgs::try_parse_from(["flyline", "--enable-easter-eggs"]).unwrap();
+        assert_eq!(args_default.enable_easter_eggs, Some(true));
     }
 }

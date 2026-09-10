@@ -275,9 +275,22 @@ fn get_command_info_uncached(cmd: &str) -> CommandWordInfo {
                 }
             }
         },
-        _ => CommandWordInfo::Unknown {
-            command: cmd.to_string(),
-        },
+        _ => {
+            if is_autocd_enabled() {
+                let expanded = fully_expand_path(cmd);
+                // We will only hit the filesystem once per command word
+                // would need to rethink this if we weren't caching.
+                if !expanded.is_empty() && std::path::Path::new(&expanded).is_dir() {
+                    return CommandWordInfo::File {
+                        command: cmd.to_string(),
+                        path: expanded,
+                    };
+                }
+            }
+            CommandWordInfo::Unknown {
+                command: cmd.to_string(),
+            }
+        }
     }
 }
 
@@ -317,6 +330,15 @@ pub fn get_command_info(cmd: &str) -> CommandWordInfo {
             command: cmd.to_string(),
             expansion,
         };
+    }
+    if is_autocd_enabled() {
+        let expanded = fully_expand_path(cmd);
+        if !expanded.is_empty() && std::path::Path::new(&expanded).is_dir() {
+            return CommandWordInfo::File {
+                command: cmd.to_string(),
+                path: expanded,
+            };
+        }
     }
     CommandWordInfo::Unknown {
         command: cmd.to_string(),
@@ -916,17 +938,28 @@ pub fn evaluate_shell_string(script: &str) -> Result<()> {
     unsafe {
         let script_cstr = std::ffi::CString::new(script)?;
         let allocated_ptr = bash_symbols::locked_xmalloc_cstr(&script_cstr);
-        let from_file_cstr = std::ffi::CString::new("flycomp")?;
+        let from_file_cstr = std::ffi::CString::new("flyline")?;
 
         #[cfg(not(feature = "pre_bash_4_4"))]
-        let flags = bash_symbols::SEVAL_NOHIST | bash_symbols::SEVAL_NOOPTIMIZE;
+        let flags = bash_symbols::SEVAL_NOHIST
+            | bash_symbols::SEVAL_NOOPTIMIZE
+            | bash_symbols::SEVAL_NOTIFY;
         #[cfg(feature = "pre_bash_4_4")]
-        let flags = bash_symbols::SEVAL_NOHIST;
+        let flags = bash_symbols::SEVAL_NOHIST | bash_symbols::SEVAL_NOTIFY;
+
+        // Save parser state (Bash's save_parser_state(NULL) uses xmalloc to allocate exact sizeof(sh_parser_state_t))
+        let ps_ptr = bash_symbols::save_parser_state(std::ptr::null_mut());
 
         #[cfg(not(feature = "pre_bash_4_4"))]
         bash_symbols::evalstring(allocated_ptr, from_file_cstr.as_ptr(), flags);
         #[cfg(feature = "pre_bash_4_4")]
         bash_symbols::parse_and_execute(allocated_ptr, from_file_cstr.as_ptr(), flags);
+
+        // Restore parser state so expand_aliases and parser_state are preserved
+        if !ps_ptr.is_null() {
+            bash_symbols::restore_parser_state(ps_ptr);
+            libc::free(ps_ptr);
+        }
         Ok(())
     }
 }
@@ -1641,7 +1674,7 @@ pub fn find_quote_type(s: &str) -> Option<QuoteType> {
 }
 
 // ---------------------------------------------------------------------------
-// Cached environment lookups (moved from BashEnvManager)
+// Cached environment lookups
 // ---------------------------------------------------------------------------
 
 static DEFINED_ALIASES: Mutex<Option<Vec<CommandWordInfo>>> = Mutex::new(None);
@@ -1775,39 +1808,55 @@ impl ExecutablesOnPath {
 
     /// Update the cache in-place: evict removed PATH dirs, add new ones, and
     /// re-scan any directory whose mtime has changed.
-    fn update_cache(&mut self) {
+    ///
+    /// This is pure file system stuff and should never require BASH_LOCK.
+    fn update_cache(path_env: Option<String>) {
         let _timer = crate::perf::PerfTimer::start_and_log_on_drop("update_path_cache");
-        let current_dirs: Vec<PathBuf> = get_envvar_value("PATH")
+        let current_dirs: Vec<PathBuf> = path_env
             .map(|p| p.split(':').map(PathBuf::from).collect())
             .unwrap_or_default();
 
         let current_dir_set: HashSet<&PathBuf> = current_dirs.iter().collect();
 
         // Evict directories that are no longer on PATH.
-        self.cache.retain(|dir, _| current_dir_set.contains(dir));
+        EXECUTABLES_ON_PATH
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cache
+            .retain(|dir, _| current_dir_set.contains(dir));
 
         // Refresh (or populate) each directory that is currently on PATH.
-        for dir in &current_dirs {
+        for dir in current_dirs {
             let current_mtime = dir.metadata().ok().and_then(|m| m.modified().ok());
 
-            match self.cache.get(dir) {
-                Some(entry) if entry.mtime == current_mtime => {
-                    continue;
+            let needs_update = {
+                let guard = EXECUTABLES_ON_PATH
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                match guard.cache.get(&dir) {
+                    Some(entry) if entry.mtime == current_mtime => false,
+                    _ => true,
                 }
-                _ => {
-                    let names = if current_mtime.is_some() {
-                        Self::scan_dir(dir)
-                    } else {
-                        Vec::new()
-                    };
-                    self.cache.insert(
-                        dir.clone(),
+            };
+
+            if needs_update {
+                let names = if current_mtime.is_some() {
+                    Self::scan_dir(&dir)
+                } else {
+                    Vec::new()
+                };
+
+                EXECUTABLES_ON_PATH
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .cache
+                    .insert(
+                        dir,
                         DirExecutables {
                             mtime: current_mtime,
                             names,
                         },
                     );
-                }
             }
         }
     }
@@ -1860,10 +1909,14 @@ pub fn get_possible_command_words() -> impl Iterator<Item = CommandWordInfo> {
     let reserved_words = get_cached_reserved_words();
     let shell_functions = get_cached_shell_functions();
     let builtins = get_cached_builtins();
-    let mut exe_guard = EXECUTABLES_ON_PATH.lock().unwrap();
-    exe_guard.update_cache();
-    let executables: Vec<CommandWordInfo> = exe_guard.iter_info().collect();
-    drop(exe_guard);
+    // This should be pre warmed by warm_completion_caches
+    // We don't update the executables cache here to avoid hitting the filesystem
+    // when we are just tab completing
+    let executables: Vec<CommandWordInfo> = EXECUTABLES_ON_PATH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter_info()
+        .collect();
 
     aliases
         .into_iter()
@@ -1884,19 +1937,24 @@ pub fn get_possible_command_words() -> impl Iterator<Item = CommandWordInfo> {
 }
 
 #[cfg(not(test))]
-pub fn warm_completion_caches() {
+pub fn warm_bash_caches() {
     let _guard = crate::bash_symbols::BASH_LOCK.lock();
     let _ = get_cached_aliases();
     let _ = get_cached_reserved_words();
     let _ = get_cached_shell_functions();
     let _ = get_cached_builtins();
-    if let Ok(mut exe_guard) = EXECUTABLES_ON_PATH.lock() {
-        exe_guard.update_cache();
-    }
 }
 
 #[cfg(test)]
-pub fn warm_completion_caches() {}
+pub fn warm_bash_caches() {}
+
+#[cfg(not(test))]
+pub fn warm_path_cache(path_env: Option<String>) {
+    ExecutablesOnPath::update_cache(path_env);
+}
+
+#[cfg(test)]
+pub fn warm_path_cache(_path_env: Option<String>) {}
 
 #[cfg(not(test))]
 pub fn read_terminating_signal() -> c_int {
@@ -2371,5 +2429,33 @@ pub(crate) mod test_fixtures {
 
         clap_complete::engine::complete(&mut cmd, args_os, index, current_dir.as_deref())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+static TEST_AUTOCD_OVERRIDE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub fn set_test_autocd_override(enabled: bool) {
+    TEST_AUTOCD_OVERRIDE.store(enabled, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn is_autocd_enabled() -> bool {
+    #[cfg(test)]
+    {
+        if TEST_AUTOCD_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst) {
+            return true;
+        }
+        false
+    }
+    #[cfg(all(not(test), feature = "pre_bash_4_4"))]
+    {
+        false
+    }
+    #[cfg(all(not(test), not(feature = "pre_bash_4_4")))]
+    {
+        let _guard = crate::bash_symbols::BASH_LOCK.lock();
+        unsafe { bash_symbols::autocd != 0 }
     }
 }

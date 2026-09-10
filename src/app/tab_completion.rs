@@ -382,9 +382,14 @@ fn gen_completions_uncomitted(
                     word_under_cursor.as_ref()
                 );
                 if !matching_vars.is_empty() {
+                    let suffix = if completion_context.is_inside_quotes {
+                        ""
+                    } else {
+                        " "
+                    };
                     return Some(
                         ActiveSuggestionsBuilder::from_processed(
-                            ProcessedSuggestion::from_string_vec(matching_vars, "", " "),
+                            ProcessedSuggestion::from_string_vec(matching_vars, "", suffix),
                         )
                         .with_comp_type(comp_type.clone()),
                     );
@@ -1122,18 +1127,15 @@ impl App<'_> {
             .to_string();
 
         if builder.should_run_flycomp {
-            let output_dir = self.settings.flycomp_output.as_deref();
+            let output_dir = self.settings.flycomp.output_dir();
             let dump_path = backend()
                 .resolve_completion_script_path(&command_word, output_dir)
                 .to_string_lossy()
                 .into_owned();
-            let sandbox = flycomp::is_sandboxing_available();
-
             self.content_mode = ContentMode::TabCompletionAskForFlycomp {
                 command_word,
                 word_under_cursor: wuc_substring.s.clone(),
                 selection: FlycompPromptSelection::Yes,
-                sandbox,
                 dump_path,
             };
             return;
@@ -1224,8 +1226,8 @@ impl App<'_> {
             .next()
             .unwrap_or("")
             .to_string();
-        let will_run_flycomp_if_prog_comp_is_useless = self.settings.use_flycomp
-            && !self.settings.flycomp_blacklist.contains(&command_word)
+        let will_run_flycomp_if_prog_comp_is_useless = self.settings.flycomp.enabled()
+            && !self.settings.flycomp.is_blacklisted(&command_word)
             && !auto_started
             && (wuc_substring.s.is_empty() || wuc_substring.s.chars().all(|c| c == '-'));
 
@@ -2029,7 +2031,7 @@ mod tab_completion_tests {
                 }
             ]);
 
-            // But above that length, fuzzy filtering in active suggestions should just return dummy scores
+            // But above that length, fuzzy filtering falls back to substring matching
             let mut buffer = TextBuffer::new_with_cursor("mycmd ./len_65_plus_3/█");
             let active_suggestions = run_to_active_suggestions(&mut buffer);
             assert_eq!(buffer.buffer(), "mycmd ./len_65_plus_3/abcd_abcd_abcd_abcd_abcd_abcd_abcd_abcd_abcd_abcd_abcd_abcd_abcd_");
@@ -2051,13 +2053,13 @@ mod tab_completion_tests {
             assert_eq!(active_suggestions.filtered_suggestions, vec![
                 FilteredItem{
                     suggestion_idx: 0,
-                    score: 0,
-                    matching_indices: vec![],
+                    score: 3000,
+                    matching_indices: (0..65).collect(),
                 },
                 FilteredItem{
                     suggestion_idx: 1,
-                    score: 0,
-                    matching_indices: vec![],
+                    score: 3000,
+                    matching_indices: (0..65).collect(),
                 }
             ]);
 
@@ -2100,6 +2102,22 @@ mod tab_completion_tests {
             let actual = run_completion("getsub --subtitle-type=t");
             let names: Vec<&str> = actual.iter().map(|s| s.s.as_str()).collect();
             assert_eq!(names, vec!["tsv", "txt"]);
+        }
+
+        #[test]
+        fn test_env_var_completion_inside_quotes_has_no_trailing_space() {
+            let (builder, ctx) = get_builder("echo \"$USER").unwrap();
+            assert!(ctx.is_inside_quotes);
+            let item = builder.processed.first().unwrap();
+            assert_eq!(item.suffix, "");
+        }
+
+        #[test]
+        fn test_env_var_completion_outside_quotes_has_trailing_space() {
+            let (builder, ctx) = get_builder("echo $USER").unwrap();
+            assert!(!ctx.is_inside_quotes);
+            let item = builder.processed.first().unwrap();
+            assert_eq!(item.suffix, " ");
         }
     }
 }

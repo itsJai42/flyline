@@ -57,6 +57,11 @@ jobs:
           - { target: x86_64-unknown-linux-gnu,   os: ubuntu-latest, build_tool: cross, lib: libflyline.so,    feature_flags: "--features pre_bash_4_4", suffix: "_pre_bash_4_4" }
           # FreeBSD (via cross)
           - { target: x86_64-unknown-freebsd,     os: ubuntu-latest, build_tool: cross, lib: libflyline.so,    feature_flags: "",                        suffix: "" }
+          # Android (via cross)
+          - { target: aarch64-linux-android,      os: ubuntu-latest, build_tool: cross, lib: libflyline.so,    feature_flags: "",                        suffix: "" }
+          - { target: x86_64-linux-android,       os: ubuntu-latest, build_tool: cross, lib: libflyline.so,    feature_flags: "",                        suffix: "" }
+          - { target: armv7-linux-androideabi,    os: ubuntu-latest, build_tool: cross, lib: libflyline.so,    feature_flags: "",                        suffix: "" }
+          - { target: i686-linux-android,         os: ubuntu-latest, build_tool: cross, lib: libflyline.so,    feature_flags: "",                        suffix: "" }
           # macOS (native cargo)
           - { target: x86_64-apple-darwin,        os: macos-latest,  build_tool: cargo, lib: libflyline.dylib, feature_flags: "",                        suffix: "" }
           - { target: aarch64-apple-darwin,       os: macos-latest,  build_tool: cargo, lib: libflyline.dylib, feature_flags: "",                        suffix: "" }
@@ -129,7 +134,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [install-test-alpine, install-test-ubuntu, install-test-arch, install-test-bash-3-2-57]
+        target: [install-test-alpine, install-test-ubuntu, install-test-arch, install-test-termux, install-test-bash-3-2-57, test-mimalloc-symbols]
     steps:
       - uses: actions/checkout@v7
       - name: Set up Docker Buildx

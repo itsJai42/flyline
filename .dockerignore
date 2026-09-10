@@ -1,0 +1,8 @@
+target/
+.git/
+docker/build/
+docker/build-*/
+*.so
+*.a
+pkg/
+*.pkg.tar.zst

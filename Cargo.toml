@@ -1,6 +1,6 @@
 [package]
 name = "flyline"
-version = "1.3.0"
+version = "1.5.0"
 edition = "2024"
 
 [lints.clippy]
@@ -31,32 +31,23 @@ path = "tests/fish_integration_tests.rs"
 mimalloc = { version = "0.1.52", default-features = false, features = ["local_dynamic_tls"] }
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = { version = "4.6.3", features = ["unstable-dynamic"] }
-ratatui = { git = "https://github.com/Marlinski/ratatui.git", rev = "fd8e0f024847af467129e0a166390d7e291c1b2e", features = ["default", "unstable-rendered-line-info", "serde"] }
-# default flags include "windows" which just causes bloat
-# "use-dev-tty" is needed to avoid crossterm's event loop from spinning on closed stdin.
-# See https://github.com/crossterm-rs/crossterm/blob/fce58c879a748f3159216f68833100aa16141ab0/src/event/source/unix/mio.rs#L97-L104
-# https://github.com/openai/codex/issues/14962
-# https://github.com/ki-editor/ki-editor/commit/1dd31aa8eae9ff84498fb23b1319aa05783ca7d7
-# https://github.com/crossterm-rs/crossterm/issues/828
-# https://github.com/crossterm-rs/crossterm/issues/793
-# Use our custom crossterm fork (pointing to commit 78def95567c26a463d9f7554d48c3940d797a254) to support OSC52 clipboard and right-click paste parsing.
-# We must patch crates.io with the exact same commit to avoid compiling duplicate crossterm versions.
-crossterm = { git = "https://github.com/HalFrgrd/crossterm.git", rev = "78def95567c26a463d9f7554d48c3940d797a254", default-features = false, features = ["bracketed-paste", "events", "osc52", "use-dev-tty", "libc"] }
+ratatui = { git = "https://github.com/HalFrgrd/ratatui.git", rev = "99afe70184dd50483e0b7c0f6afa515c511af06b", default-features = false, features = ["termina", "unstable-rendered-line-info", "unstable-backend-writer", "serde", "macros"] }
+termina = { git = "https://github.com/HalFrgrd/termina.git", rev = "529aeb6b65660d642af221f4f6a09b7e4fc51213" }
 chrono = { version = "0.4" }
 serde = { version = "1", features = ["derive"] }
 log = "0.4"
 parking_lot = "0.12"
-ansi-to-tui = { git = "https://github.com/HalFrgrd/ansi-to-tui.git", rev = "9101076f8e23010515ff6fe1571bf87a2d0d4abc"}
+ansi-to-tui = { git = "https://github.com/HalFrgrd/ansi-to-tui.git", rev = "78bdac7021836dda51a986a9854e2b01ec2ec317" }
 libc = "0.2.186"
 anyhow = "1.0.102"
 unicode-width = { version = "0.2.0", default-features = false }
 unicode-segmentation = "1.13.2"
 itertools = "0.14.0"
 glob = "0.3.3"
-flash = { git = "https://github.com/HalFrgrd/flash.git", rev = "7f37b29befc07aba742d71e7d9164d4ed75eaf50" }
+flash = { git = "https://github.com/HalFrgrd/flash.git", rev = "59af2ab94aaa6b7a407d09549605b1d3bc81256c" }
 skim = { git = "https://github.com/HalFrgrd/skim", rev = "7908ee85a5f6cd49575925fcc0bdef3999409d26", default-features =  false, features = ["algos_only"]}
 lscolors = "0.21.0"
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 shlex = "1.3.0"
 rand = "0.10.1"
@@ -65,7 +56,7 @@ parse-style = { version = "0.4.0" }
 easing-function = "0.1.1"
 strum = { version = "0.28.0", features = ["derive"] }
 ctor = "1.0.7"
-flycomp = { git = "https://github.com/HalFrgrd/flycomp.git", rev = "29813f47d0f733273ccfb03df72a33639b85902e" }
+flycomp = { git = "https://github.com/HalFrgrd/flycomp.git", rev = "754be16d7a2130ad12b6d038d42a8933c92c103f" }
 
 [features]
 pre_bash_4_4 = []
@@ -87,10 +78,14 @@ chrono = { version = "0.4" }
 dockerfile = "docker/cross/x86_64-unknown-linux-gnu.Dockerfile"
 [package.metadata.cross.target.aarch64-unknown-linux-gnu]
 dockerfile = "docker/cross/aarch64-unknown-linux-gnu.Dockerfile"
+[package.metadata.cross.target.aarch64-linux-android]
+dockerfile = "docker/cross/aarch64-linux-android.Dockerfile"
+[package.metadata.cross.target.x86_64-linux-android]
+dockerfile = "docker/cross/x86_64-linux-android.Dockerfile"
+[package.metadata.cross.target.armv7-linux-androideabi]
+dockerfile = "docker/cross/armv7-linux-androideabi.Dockerfile"
+[package.metadata.cross.target.i686-linux-android]
+dockerfile = "docker/cross/i686-linux-android.Dockerfile"
 
 [patch.crates-io]
-# Patch crates.io to point to the exact same git commit (78def95567c26a463d9f7554d48c3940d797a254) of our crossterm fork.
-# This prevents Cargo from compiling both the registry and git versions of crossterm, which would duplicate
-# the static event reader and cause stdin inputs typed during active commands (e.g. `sleep 1`) to be lost.
-crossterm = { git = "https://github.com/HalFrgrd/crossterm.git", rev = "78def95567c26a463d9f7554d48c3940d797a254" }
-
+termina = { git = "https://github.com/HalFrgrd/termina.git", rev = "529aeb6b65660d642af221f4f6a09b7e4fc51213" }

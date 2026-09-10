@@ -45,6 +45,7 @@ impl HistoryEntry {
                 self.command.len(),
                 false,
                 palette,
+                true,
             );
             let mut lines: Vec<Line<'static>> = vec![];
             let mut current_spans: Vec<Span<'static>> = vec![];

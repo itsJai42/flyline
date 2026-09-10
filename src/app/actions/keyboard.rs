@@ -5,7 +5,6 @@ use crate::settings::MouseMode;
 use crate::text_buffer::WordDelim;
 use anyhow::Result;
 use clap_complete::CompletionCandidate;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::ops::Add;
@@ -13,6 +12,7 @@ use std::sync::LazyLock;
 use strum::{
     AsRefStr, EnumIter, EnumMessage, EnumString, IntoEnumIterator, IntoStaticStr, VariantArray,
 };
+use termina::event::{KeyCode, KeyEvent, Modifiers as KeyModifiers};
 
 pub(crate) type ContextExpr = super::ContextExpr<ContextVar>;
 pub(crate) type ContextValues = super::ContextValues<ContextVar>;
@@ -46,6 +46,8 @@ pub enum KeyEventAction {
     AgentOutputSelectFirstEntry,
     #[strum(message = "Start agent mode with the current buffer again")]
     AgentOutputRunAgentMode,
+    #[strum(message = "Deselect the currently selected agent output entry")]
+    AgentOutputDeselectEntry,
     #[strum(message = "Move up in tab completion suggestions")]
     TabCompletionMoveUp,
     #[strum(message = "Move down in tab completion suggestions")]
@@ -187,7 +189,7 @@ pub enum KeyEventAction {
     #[strum(message = "Move one word part right, extending the text selection")]
     MoveRightOneWordPartExtendSelection,
     #[strum(message = "Copy the current text selection to the system clipboard via OSC 52")]
-    CopySelectionOsc52,
+    CopyTarget,
     #[strum(
         message = "Cut the current text selection: copy it to the clipboard via OSC 52 and delete it from the buffer"
     )]
@@ -222,6 +224,8 @@ pub enum KeyEventAction {
     UnsetLeaderKey,
     #[strum(message = "Insert a literal string of characters", disabled)]
     InsertString(String),
+    #[strum(message = "Run a Bash command", disabled)]
+    RunBashCommand(String),
 }
 
 impl KeyEventAction {
@@ -229,6 +233,7 @@ impl KeyEventAction {
     pub fn as_str(&self) -> &'static str {
         match self {
             KeyEventAction::InsertString(_) => "insertString",
+            KeyEventAction::RunBashCommand(_) => "runBashCommand",
             _ => <&'static str>::from(self),
         }
     }
@@ -238,6 +243,7 @@ impl KeyEventAction {
     pub fn description(&self) -> &'static str {
         match self {
             KeyEventAction::InsertString(_) => "Insert a literal string of characters",
+            KeyEventAction::RunBashCommand(_) => "Run a Bash command",
             _ => self.get_message().unwrap_or(""),
         }
     }
@@ -245,6 +251,7 @@ impl KeyEventAction {
     pub fn display_name(&self) -> String {
         match self {
             KeyEventAction::InsertString(s) => format!("insertString('{}')", s.escape_debug()),
+            KeyEventAction::RunBashCommand(s) => format!("runBashCommand('{}')", s.escape_debug()),
             _ => self.as_str().to_string(),
         }
     }
@@ -291,6 +298,11 @@ impl KeyEventAction {
                     selection.set_selected_by_idx(0);
                 }
             }
+            KeyEventAction::AgentOutputDeselectEntry => {
+                if let ContentMode::AgentOutputSelection(selection) = &mut app.content_mode {
+                    selection.deselect();
+                }
+            }
             KeyEventAction::AgentOutputRunAgentMode => {
                 if let Some((agent_cmd, buffer)) = app.resolve_agent_command(false) {
                     app.start_agent_mode(agent_cmd, &buffer);
@@ -316,17 +328,16 @@ impl KeyEventAction {
                     command_word,
                     word_under_cursor,
                     selection,
-                    sandbox,
                     ..
                 } = mode
                 {
                     match selection {
                         FlycompPromptSelection::Yes => {
-                            app.run_flycomp(command_word, word_under_cursor, sandbox.is_some());
+                            app.run_flycomp(command_word, word_under_cursor);
                         }
                         FlycompPromptSelection::No => {}
                         FlycompPromptSelection::DontAsk => {
-                            app.settings.flycomp_blacklist.insert(command_word);
+                            app.settings.flycomp.add_to_blacklist(command_word);
                         }
                     }
                 }
@@ -717,7 +728,7 @@ impl KeyEventAction {
                 app.buffer.start_selection_if_none();
                 app.buffer.move_one_word_right_fine_grained();
             }
-            KeyEventAction::CopySelectionOsc52 => {
+            KeyEventAction::CopyTarget => {
                 let text_to_copy = if app.right_click_popup_pos.is_some() {
                     app.right_click_copy_target
                         .as_ref()
@@ -726,15 +737,21 @@ impl KeyEventAction {
                             crate::app::RightClickCopyTarget::Buffer(s) => s.clone(),
                             crate::app::RightClickCopyTarget::HistoryEntry(s) => s.clone(),
                             crate::app::RightClickCopyTarget::Cwd(s) => s.clone(),
+                            crate::app::RightClickCopyTarget::Suggestion(s) => s.clone(),
+                            crate::app::RightClickCopyTarget::AiResult(s) => s.clone(),
+                            crate::app::RightClickCopyTarget::Clipboard(s) => s.clone(),
                         })
                 } else {
                     app.buffer.selected_text()
                 };
 
                 if let Some(text) = text_to_copy {
-                    match crossterm::execute!(
-                        std::io::stdout(),
-                        crossterm::clipboard::CopyToClipboard::to_clipboard_from(text)
+                    match crate::flush_stdout!(
+                        "{}",
+                        termina::escape::osc::Osc::SetSelection(
+                            termina::escape::osc::Selection::CLIPBOARD,
+                            &text
+                        )
                     ) {
                         Ok(()) => {
                             log::info!("Copied selection to clipboard via OSC 52");
@@ -748,24 +765,25 @@ impl KeyEventAction {
                 app.right_click_copy_target = None;
             }
             KeyEventAction::CutSelection => {
-                let target_to_cut = if app.right_click_popup_pos.is_some() {
-                    app.right_click_copy_target.clone()
-                } else {
-                    app.buffer
-                        .selected_text()
-                        .map(crate::app::RightClickCopyTarget::Selection)
-                };
-
-                if let Some(target) = target_to_cut {
-                    let text = match &target {
-                        crate::app::RightClickCopyTarget::Selection(s) => s,
-                        crate::app::RightClickCopyTarget::Buffer(s) => s,
-                        crate::app::RightClickCopyTarget::HistoryEntry(s) => s,
-                        crate::app::RightClickCopyTarget::Cwd(s) => s,
+                let (text_to_cut, is_selection) =
+                    if let Some(selection) = app.buffer.selected_text() {
+                        (Some(selection), true)
+                    } else {
+                        let buf = app.buffer.buffer().to_string();
+                        if !buf.is_empty() {
+                            (Some(buf), false)
+                        } else {
+                            (None, false)
+                        }
                     };
-                    match crossterm::execute!(
-                        std::io::stdout(),
-                        crossterm::clipboard::CopyToClipboard::to_clipboard_from(text.clone())
+
+                if let Some(text) = text_to_cut {
+                    match crate::flush_stdout!(
+                        "{}",
+                        termina::escape::osc::Osc::SetSelection(
+                            termina::escape::osc::Selection::CLIPBOARD,
+                            &text
+                        )
                     ) {
                         Ok(()) => {
                             log::info!("Cut selection to clipboard via OSC 52");
@@ -774,20 +792,11 @@ impl KeyEventAction {
                             log::error!("Failed to copy to clipboard via OSC 52: {}", e);
                         }
                     }
-                    match target {
-                        crate::app::RightClickCopyTarget::Selection(_) => {
-                            app.buffer.delete_selection();
-                        }
-                        crate::app::RightClickCopyTarget::Buffer(_) => {
-                            app.buffer.replace_buffer("");
-                            app.on_possible_buffer_change();
-                        }
-                        crate::app::RightClickCopyTarget::HistoryEntry(_) => {
-                            // History is read-only.
-                        }
-                        crate::app::RightClickCopyTarget::Cwd(_) => {
-                            // CWD is read-only.
-                        }
+                    if is_selection {
+                        app.buffer.delete_selection();
+                    } else {
+                        app.buffer.replace_buffer("");
+                        app.on_possible_buffer_change();
                     }
                 }
                 app.right_click_copy_target = None;
@@ -800,9 +809,11 @@ impl KeyEventAction {
             // Normally the terminal emulator handles Ctrl+V
             // But if it doesn't it gives us an opportunity use OSC52 request system clibpoard!
             KeyEventAction::PasteSystemClipboard => {
-                let _ = crossterm::execute!(
-                    std::io::stdout(),
-                    crossterm::clipboard::RequestClipboardContents::clipboard()
+                let _ = crate::flush_stdout!(
+                    "{}",
+                    termina::escape::osc::Osc::QuerySelection(
+                        termina::escape::osc::Selection::CLIPBOARD
+                    )
                 );
             }
             KeyEventAction::InsertLastWordFromPrevCommand => {
@@ -901,7 +912,7 @@ impl KeyEventAction {
                         app.dismissed_tab_completion_wuc = Some(wuc_substring.s.to_string());
                     }
                     ContentMode::FuzzyHistorySearch(FuzzyHistorySource::AgentPrompts) => {
-                        app.dismissed_agent_prompts_buffer = Some(app.buffer.buffer().to_string());
+                        app.dismissed_agent_mode_buffer = Some(app.buffer.buffer().to_string());
                     }
                     _ => {
                         // Not tab completion; just clear the dismissed field.
@@ -921,6 +932,9 @@ impl KeyEventAction {
             KeyEventAction::InsertString(s) => {
                 app.buffer.delete_selection();
                 app.buffer.insert_str(s);
+            }
+            KeyEventAction::RunBashCommand(cmd) => {
+                app.run_bash_command(cmd);
             }
         }
     }
@@ -1064,7 +1078,7 @@ pub enum KeyRemap {
 
 /// Parse a single key-code name (no modifiers) into a [`KeyCode`].
 fn parse_single_keycode(s: &str) -> Result<KeyCode> {
-    use crossterm::event::{MediaKeyCode, ModifierKeyCode};
+    use termina::event::{MediaKeyCode, ModifierKeyCode};
     let s = s.trim();
     if s.len() == 1 {
         // Convert upper case ASCII letters to lower case since terminals typically don't distinguish them in key codes.
@@ -1076,7 +1090,7 @@ fn parse_single_keycode(s: &str) -> Result<KeyCode> {
     // F-key: "f1" … "f255"
     if let Some(rest) = lower.strip_prefix('f') {
         if let Ok(n) = rest.parse::<u8>() {
-            return Ok(KeyCode::F(n));
+            return Ok(KeyCode::Function(n));
         }
     }
     // Media key: "media:play", "media:pause", …
@@ -1143,7 +1157,7 @@ fn parse_single_keycode(s: &str) -> Result<KeyCode> {
         "backtab" => Ok(KeyCode::BackTab),
         "delete" | "del" => Ok(KeyCode::Delete),
         "insert" | "ins" => Ok(KeyCode::Insert),
-        "esc" | "escape" => Ok(KeyCode::Esc),
+        "esc" | "escape" => Ok(KeyCode::Escape),
         "space" | "spc" => Ok(KeyCode::Char(' ')),
         "null" => Ok(KeyCode::Null),
         "capslock" | "caps_lock" | "caps" => Ok(KeyCode::CapsLock),
@@ -1318,7 +1332,7 @@ impl Binding {
     /// Parse a user-provided binding from the CLI form
     /// `<KEY> <CONTEXT_EXPR>=<ACTION>`.
     pub fn try_new_from_strs(key_event: &str, context_and_action: &str) -> Result<Self> {
-        let (context_str, action_str) = context_and_action.rsplit_once('=').ok_or_else(|| {
+        let (context_str, action_str) = context_and_action.split_once('=').ok_or_else(|| {
             anyhow::anyhow!(
                 "Invalid context and action format: '{}'. Expected 'context=action'",
                 context_and_action
@@ -1350,6 +1364,27 @@ impl Binding {
                     };
                     let unescaped = unescape_string(inner_trimmed);
                     Ok(KeyEventAction::InsertString(unescaped))
+                } else if let Some(stripped) = s.strip_prefix("runBashCommand(") {
+                    if !stripped.ends_with(')') {
+                        return Err(anyhow::anyhow!(
+                            "Invalid runBashCommand syntax: '{}'. Expected 'runBashCommand(value)'",
+                            s
+                        ));
+                    }
+                    let inner = &stripped[..stripped.len() - 1];
+                    let inner_trimmed = if (inner.starts_with('"') && inner.ends_with('"'))
+                        || (inner.starts_with('\'') && inner.ends_with('\''))
+                    {
+                        if inner.len() >= 2 {
+                            &inner[1..inner.len() - 1]
+                        } else {
+                            inner
+                        }
+                    } else {
+                        inner
+                    };
+                    let unescaped = unescape_string(inner_trimmed);
+                    Ok(KeyEventAction::RunBashCommand(unescaped))
                 } else {
                     KeyEventAction::try_from(s)
                         .map_err(|_| anyhow::anyhow!("Unknown action: '{}'", s))
@@ -1636,7 +1671,7 @@ macro_rules! expand_variations {
 #[cfg(test)]
 mod expand_variations_tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use termina::event::{KeyCode, KeyEvent, Modifiers as KeyModifiers};
 
     #[test]
     fn test_expand_variations_enter() {
@@ -1744,6 +1779,15 @@ pub fn possible_context_action_completions(current: &std::ffi::OsStr) -> Vec<Com
                 ))),
             );
         }
+        if "runbashcommand".contains(&action_lower) {
+            candidates.push(
+                CompletionCandidate::new(format!(
+                    "{}PREFIX_DELIM{}{}NO_SUFFIX",
+                    prefix, action_prefix, "runBashCommand(command)"
+                ))
+                .help(Some(clap::builder::StyledStr::from("Run a Bash command"))),
+            );
+        }
         return candidates;
     }
     // Completing context variables.  Determine the prefix already typed
@@ -1804,7 +1848,7 @@ pub fn key_sequence_completer(current: &std::ffi::OsStr) -> Vec<CompletionCandid
         KeyCode::BackTab,
         KeyCode::Delete,
         KeyCode::Insert,
-        KeyCode::Esc,
+        KeyCode::Escape,
         KeyCode::CapsLock,
         KeyCode::ScrollLock,
         KeyCode::NumLock,
@@ -1950,7 +1994,7 @@ pub static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
             &[KeyEventAction::FlycompAskAcceptChoice],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::TabCompletionAskForFlycomp.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
@@ -1965,7 +2009,7 @@ pub static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
         ),
         // --- TabCompletionRunningFlycomp bindings ---
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::TabCompletionRunningFlycomp.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
@@ -1980,7 +2024,7 @@ pub static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
         ),
         // --- TabCompletionFlycompResult bindings ---
         Binding::new(
-            &[KC::Esc.into(), KC::Enter.into(), KC::Backspace.into()],
+            &[KC::Escape.into(), KC::Enter.into(), KC::Backspace.into()],
             ContextVar::TabCompletionFlycompResult.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
@@ -2204,42 +2248,47 @@ pub static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
             &[KeyEventAction::RunTabCompletion],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::AgentModeError.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::AgentModeWaiting.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
+            ContextVar::AgentOutputEntrySelected.into(),
+            &[KeyEventAction::AgentOutputDeselectEntry],
+        ),
+        Binding::new(
+            &[KC::Escape.into()],
             ContextVar::AgentOutputSelection.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::FuzzyHistorySearch.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::PromptDirSelection.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::TabCompletionAvailable.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::TabCompletion.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::TabCompletionWaiting.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
@@ -2247,12 +2296,12 @@ pub static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
         // pressing Esc with a selection active clears the selection rather
         // than toggling the mouse.
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::TextSelected.into(),
             &[KeyEventAction::EscapeToNormalMode],
         ),
         Binding::new(
-            &[KC::Esc.into()],
+            &[KC::Escape.into()],
             ContextVar::Always.into(),
             &[KeyEventAction::ToggleMouse],
         ),
@@ -2291,7 +2340,7 @@ pub static DEFAULT_BINDINGS: LazyLock<Vec<Binding>> = LazyLock::new(|| {
                 M::SUPER + KC::Char('c').into(),
             ],
             ContextVar::TextSelected.into(),
-            &[KeyEventAction::CopySelectionOsc52],
+            &[KeyEventAction::CopyTarget],
         ),
         Binding::new(
             &[
@@ -2630,7 +2679,7 @@ fn display_keycode(code: KeyCode) -> String {
         KeyCode::BackTab => "BackTab".to_string(),
         KeyCode::Delete => "Delete".to_string(),
         KeyCode::Insert => "Insert".to_string(),
-        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Escape => "Esc".to_string(),
         KeyCode::CapsLock => "CapsLock".to_string(),
         KeyCode::ScrollLock => "ScrollLock".to_string(),
         KeyCode::NumLock => "NumLock".to_string(),
@@ -2641,7 +2690,7 @@ fn display_keycode(code: KeyCode) -> String {
         KeyCode::Null => "Null".to_string(),
         KeyCode::Char(' ') => "Space".to_string(),
         KeyCode::Char(c) => c.to_string(),
-        KeyCode::F(n) => format!("F{}", n),
+        KeyCode::Function(n) => format!("F{}", n),
         KeyCode::Media(mk) => format!("Media:{:?}", mk),
         KeyCode::Modifier(mk) => format!("Modifier:{:?}", mk),
     }
@@ -2856,11 +2905,6 @@ impl KeyEventMatch {
     }
 }
 
-/// ANSI escape sequence: blinking white text on red background.
-const ANSI_BLINK_WHITE_ON_RED: &str = "\x1b[5;37;41m";
-/// ANSI escape sequence: reset all attributes.
-const ANSI_RESET: &str = "\x1b[0m";
-
 fn key_event_a_shadows_b(a: &KeyEventMatch, b: &KeyEventMatch) -> bool {
     match (a, b) {
         // Under strict matching, key events only shadow each other if their modifiers match exactly.
@@ -3031,8 +3075,17 @@ pub fn print_bindings_table(
         }
     }
 
-    // Retrieve the terminal width; fall back to 120 columns if unavailable.
-    let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(120);
+    use termina::Terminal;
+    let term_width = (|| {
+        if let Ok(t) = termina::PlatformTerminal::new() {
+            if let Ok(d) = t.get_dimensions() {
+                if d.cols > 0 {
+                    return d.cols;
+                }
+            }
+        }
+        80
+    })();
 
     let constraints = [
         Constraint::Fill(1), // Key(s)
@@ -3103,12 +3156,22 @@ pub fn print_bindings_table(
     let conflicts = detect_binding_conflicts(user_bindings, remappings);
     if !conflicts.is_empty() {
         println!("\nKey Binding Conflicts:");
-        let use_color = std::io::stdout().is_terminal();
+        let use_color =
+            std::io::stdout().is_terminal() && !termina::style::Stylized::is_ansi_color_disabled();
         for conflict in &conflicts {
             // "INACCESSIBLE: key" formatted as blinking white on red.
             let label = format!("INACCESSIBLE: {}", conflict.inaccessible_action);
             let styled_label = if use_color {
-                format!("{}{}{}", ANSI_BLINK_WHITE_ON_RED, label, ANSI_RESET)
+                use termina::escape::csi::{Csi, Sgr, SgrAttributes, SgrModifiers};
+                use termina::style::ColorSpec;
+                let style = Csi::Sgr(Sgr::Attributes(SgrAttributes {
+                    modifiers: SgrModifiers::BLINK_SLOW,
+                    foreground: Some(ColorSpec::WHITE),
+                    background: Some(ColorSpec::RED),
+                    ..Default::default()
+                }));
+                let reset = Csi::Sgr(Sgr::Reset);
+                format!("{style}{label}{reset}")
             } else {
                 label
             };
@@ -3137,9 +3200,7 @@ impl<'a> App<'a> {
         let context_values = ContextValues::evaluate(self);
 
         // Find the highest-priority binding whose context is satisfied and
-        // whose key matches.  We extract the action (Copy) before running it
-        // so that running the action does not overlap with the immutable
-        // borrow of `self.settings.keybindings`.
+        // matches the key event. User bindings take priority over default bindings.
         let mut matched: Option<(Vec<KeyEventAction>, String)> = None;
         for binding in self
             .settings
@@ -3205,7 +3266,7 @@ impl<'a> App<'a> {
 mod tests {
     use super::super::ContextLiteral;
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use termina::event::{KeyCode, KeyEvent, Modifiers as KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
@@ -3355,7 +3416,7 @@ mod tests {
             },
             KeyRemap::Event {
                 from: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-                to: KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+                to: KeyEvent::new(KeyCode::Escape, KeyModifiers::empty()),
             },
             KeyRemap::Modifier {
                 from: KeyModifiers::CONTROL,
@@ -3372,7 +3433,7 @@ mod tests {
         // 2. Ctrl+A should map to Esc (Event remap takes precedence over Modifier remap)
         let k2 = key_with_mods(KeyCode::Char('a'), KeyModifiers::CONTROL);
         let r2 = apply_remappings(k2, &remappings);
-        assert_eq!(r2.code, KeyCode::Esc);
+        assert_eq!(r2.code, KeyCode::Escape);
         assert_eq!(r2.modifiers, KeyModifiers::empty());
 
         // 3. Ctrl+B should map to Alt+B (Modifier remap still applies to other keys)
@@ -3439,7 +3500,7 @@ mod tests {
     fn test_display_escape_remapped_to_tab() {
         // Escape → Tab: a binding expecting Tab should display as "Esc".
         let remappings = vec![KeyRemap::Key {
-            from: KeyCode::Esc,
+            from: KeyCode::Escape,
             to: KeyCode::Tab,
         }];
         let kem = KeyEventMatch::Exact(key(KeyCode::Tab));
@@ -3571,15 +3632,18 @@ mod tests {
 
     #[test]
     fn test_parse_keycode_f_keys() {
-        assert_eq!(parse_single_keycode("f1").unwrap(), KeyCode::F(1));
-        assert_eq!(parse_single_keycode("F1").unwrap(), KeyCode::F(1));
-        assert_eq!(parse_single_keycode("f12").unwrap(), KeyCode::F(12));
-        assert_eq!(parse_single_keycode("f255").unwrap(), KeyCode::F(255));
+        assert_eq!(parse_single_keycode("f1").unwrap(), KeyCode::Function(1));
+        assert_eq!(parse_single_keycode("F1").unwrap(), KeyCode::Function(1));
+        assert_eq!(parse_single_keycode("f12").unwrap(), KeyCode::Function(12));
+        assert_eq!(
+            parse_single_keycode("f255").unwrap(),
+            KeyCode::Function(255)
+        );
     }
 
     #[test]
     fn test_parse_keycode_media() {
-        use crossterm::event::MediaKeyCode;
+        use termina::event::MediaKeyCode;
         assert_eq!(
             parse_single_keycode("media:play").unwrap(),
             KeyCode::Media(MediaKeyCode::Play)
@@ -3612,7 +3676,7 @@ mod tests {
 
     #[test]
     fn test_parse_keycode_modifier_key() {
-        use crossterm::event::ModifierKeyCode;
+        use termina::event::ModifierKeyCode;
         assert_eq!(
             parse_single_keycode("modifier:leftshift").unwrap(),
             KeyCode::Modifier(ModifierKeyCode::LeftShift)
@@ -3923,6 +3987,43 @@ mod tests {
     }
 
     #[test]
+    fn test_binding_try_new_from_strs_run_bash_command() {
+        let b =
+            Binding::try_new_from_strs("Ctrl+g", "always=runBashCommand('echo hello')").unwrap();
+        assert_eq!(
+            b.actions,
+            vec![KeyEventAction::RunBashCommand("echo hello".to_string())]
+        );
+
+        let action = KeyEventAction::RunBashCommand("echo hello".to_string());
+        assert_eq!(action.as_str(), "runBashCommand");
+        assert_eq!(action.description(), "Run a Bash command");
+        assert_eq!(action.display_name(), "runBashCommand('echo hello')");
+
+        let b2 =
+            Binding::try_new_from_strs("Ctrl+g", "always=runBashCommand(\"echo \\\"hello\\\"\")")
+                .unwrap();
+        assert_eq!(
+            b2.actions,
+            vec![KeyEventAction::RunBashCommand("echo \"hello\"".to_string())]
+        );
+
+        let b3 = Binding::try_new_from_strs(
+            "Up",
+            "editingBufferMode+!cursorOnFirstLine=runBashCommand(\"__atuin_history --shell-up-key-binding --keymap-mode=emacs\")",
+        )
+        .unwrap();
+        assert_eq!(
+            b3.actions,
+            vec![KeyEventAction::RunBashCommand(
+                "__atuin_history --shell-up-key-binding --keymap-mode=emacs".to_string()
+            )]
+        );
+
+        assert!(Binding::try_new_from_strs("Ctrl+g", "always=runBashCommand(echo hello").is_err());
+    }
+
+    #[test]
     fn test_possible_context_action_completions_exact_context_yields_separators() {
         let values = possible_context_action_completions(std::ffi::OsStr::new("always"))
             .into_iter()
@@ -4114,6 +4215,8 @@ pub(crate) enum ContextVar {
     FuzzyHistorySearchNoneSelected,
     #[strum(message = "Agent output selection is active and no suggestion is currently selected")]
     AgentOutputNoneSelected,
+    #[strum(message = "Agent output selection is active and a suggestion is currently selected")]
+    AgentOutputEntrySelected,
     #[strum(message = "The leader key is currently active")]
     LeaderKeyActive,
 }
@@ -4244,6 +4347,13 @@ impl ContextVar {
             ContextVar::AgentOutputNoneSelected => {
                 if let ContentMode::AgentOutputSelection(ref selection) = app.content_mode {
                     selection.selected_idx.is_none()
+                } else {
+                    false
+                }
+            }
+            ContextVar::AgentOutputEntrySelected => {
+                if let ContentMode::AgentOutputSelection(ref selection) = app.content_mode {
+                    selection.selected_idx.is_some()
                 } else {
                     false
                 }

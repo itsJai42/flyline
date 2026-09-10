@@ -179,9 +179,29 @@ target "demo-overview-extracted" {
     dockerfile = "docker/demo_overview.Dockerfile"
 }
 
-target "demo-prompts-extracted" {
+target "demo-prompts-ps1-extracted" {
     inherits = ["_demo-base"]
-    dockerfile = "docker/demo_prompts.Dockerfile"
+    dockerfile = "docker/demo_prompts_ps1.Dockerfile"
+}
+
+target "demo-prompts-rps1-extracted" {
+    inherits = ["_demo-base"]
+    dockerfile = "docker/demo_prompts_rps1.Dockerfile"
+}
+
+target "demo-prompts-ps1-fill-extracted" {
+    inherits = ["_demo-base"]
+    dockerfile = "docker/demo_prompts_ps1_fill.Dockerfile"
+}
+
+target "demo-prompts-ps2-extracted" {
+    inherits = ["_demo-base"]
+    dockerfile = "docker/demo_prompts_ps2.Dockerfile"
+}
+
+target "demo-prompts-final-extracted" {
+    inherits = ["_demo-base"]
+    dockerfile = "docker/demo_prompts_final.Dockerfile"
 }
 
 target "demo-fuzzy-suggestions-extracted" {
@@ -242,7 +262,11 @@ target "demo-cursor-style-extracted" {
 group "demos" {
     targets = [
         "demo-overview-extracted",
-        "demo-prompts-extracted",
+        "demo-prompts-ps1-extracted",
+        "demo-prompts-rps1-extracted",
+        "demo-prompts-ps1-fill-extracted",
+        "demo-prompts-ps2-extracted",
+        "demo-prompts-final-extracted",
         "demo-fuzzy-suggestions-extracted",
         "demo-fuzzy-path-suggestions-extracted",
         "demo-custom-animation-extracted",
@@ -281,6 +305,14 @@ target "install-test-arch" {
     }
 }
 
+target "install-test-termux" {
+    context = "."
+    dockerfile = "docker/install_test_termux.Dockerfile"
+    args = {
+        FLYLINE_INSTALL_VERSION = FLYLINE_INSTALL_VERSION
+    }
+}
+
 
 target "install-test-bash-3-2-57" {
     context = "."
@@ -293,3 +325,7 @@ target "install-test-bash-3-2-57" {
     }
 }
 
+target "test-mimalloc-symbols" {
+    context = "."
+    dockerfile = "docker/arch_linux_mimalloc_symbols.Dockerfile"
+}

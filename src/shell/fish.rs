@@ -533,9 +533,21 @@ impl ShellBackend for FishBackend {
     }
 
     fn parse_history_from_memory(&self) -> Vec<HistoryEntry> {
-        // History is file-mediated: the widget runs `history save` before
-        // launching flyline and `HistoryManager` reads the fish history file.
-        vec![]
+        // History is file-mediated: the widget saves it immediately before
+        // launching flyline and exports the exact per-session history path.
+        let Some(path) = std::env::var_os("FLYLINE_FISH_HISTORY") else {
+            log::warn!("FLYLINE_FISH_HISTORY is not set; fish history is unavailable");
+            return vec![];
+        };
+        match std::fs::read(&path) {
+            Ok(bytes) => crate::history::HistoryManager::parse_fish_history_str(
+                &String::from_utf8_lossy(&bytes),
+            ),
+            Err(error) => {
+                log::warn!("Failed to read fish history from {:?}: {}", path, error);
+                vec![]
+            }
+        }
     }
 
     fn last_command_exit_status(&self) -> i32 {

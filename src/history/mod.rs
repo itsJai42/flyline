@@ -922,6 +922,65 @@ impl HistoryManager {
         res
     }
 
+    /// Parse fish's YAML-like history format. Fish escapes embedded newlines and
+    /// backslashes in the `cmd` value instead of using YAML block scalars.
+    pub fn parse_fish_history_str(s: &str) -> Vec<HistoryEntry> {
+        fn unescape_command(value: &str) -> String {
+            let mut chars = value.chars().peekable();
+            let mut command = String::with_capacity(value.len());
+            while let Some(character) = chars.next() {
+                if character != '\\' {
+                    command.push(character);
+                    continue;
+                }
+
+                match chars.next() {
+                    Some('n') => command.push('\n'),
+                    Some('r') => command.push('\r'),
+                    Some('t') => command.push('\t'),
+                    Some('e') => command.push('\u{1b}'),
+                    Some('\\') => command.push('\\'),
+                    Some(next) => {
+                        command.push('\\');
+                        command.push(next);
+                    }
+                    None => command.push('\\'),
+                }
+            }
+            command
+        }
+
+        fn push_entry(
+            entries: &mut Vec<HistoryEntry>,
+            command: Option<String>,
+            timestamp: Option<u64>,
+        ) {
+            if let Some(command) = command.filter(|command| !command.trim().is_empty()) {
+                entries.push(HistoryEntry::new(
+                    timestamp.map(|seconds| TimestampNanos::from_seconds(seconds).raw_nanos()),
+                    entries.len(),
+                    command,
+                ));
+            }
+        }
+
+        let mut entries = Vec::new();
+        let mut command = None;
+        let mut timestamp = None;
+        for line in s.lines() {
+            if let Some(value) = line.strip_prefix("- cmd: ") {
+                push_entry(&mut entries, command.take(), timestamp.take());
+                command = Some(unescape_command(value));
+            } else if command.is_some()
+                && let Some(value) = line.strip_prefix("  when: ")
+            {
+                timestamp = value.trim().parse().ok();
+            }
+        }
+        push_entry(&mut entries, command, timestamp);
+        entries
+    }
+
     pub fn get_command_suggestion_suffix(
         &mut self,
         command: &str,
@@ -1507,6 +1566,26 @@ cd /home/user2
             "echo 'Hello, World!'\npwd\n#cd /asdf/asdf\ncd /home/user",
         );
         check(Some(1_625_078_460 * NS), 2, "cd /home/user2");
+    }
+
+    #[test]
+    fn test_parse_fish_history() {
+        let history = r#"- cmd: echo first
+  when: 1700000000
+  paths:
+    - /tmp/example
+- cmd: printf 'one\ntwo'
+  when: 1700000010
+- cmd: echo C:\\tmp
+  when: 1700000020
+"#;
+
+        let entries = HistoryManager::parse_fish_history_str(history);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].command, "echo first");
+        assert_eq!(entries[0].timestamp.unwrap().as_seconds(), 1_700_000_000);
+        assert_eq!(entries[1].command, "printf 'one\ntwo'");
+        assert_eq!(entries[2].command, "echo C:\\tmp");
     }
 
     #[test]

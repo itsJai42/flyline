@@ -29,6 +29,13 @@ expand_path() {
     esac
 }
 
+# Absolute path of an existing directory, without resolving symlinked path
+# components (symlinked INSTALL_DIRs must stay as typed so that relative
+# symlinks inside them resolve against the link, not the real dir).
+abs_dir() {
+    (CDPATH= cd -- "$1" && pwd)
+}
+
 REPO="HalFrgrd/flyline"
 if [ -n "${FLYLINE_INSTALL_DIR:-}" ]; then
     INSTALL_DIR="$(expand_path "$FLYLINE_INSTALL_DIR")"
@@ -406,8 +413,15 @@ install_fish_integration() {
 
     standalone_path="${INSTALL_DIR}/${STANDALONE_BIN}"
     if [ -f "$standalone_path" ]; then
-        chmod +x "$standalone_path"
+        chmod +x "$standalone_path" 2>/dev/null ||
+            warn "Could not chmod +x ${standalone_path}."
         say "Installed fish editor: ${standalone_path}"
+    elif [ -L "$standalone_path" ]; then
+        # Dangling symlink: -f fails, so say so explicitly rather than
+        # reporting "not installed yet" and leaving the user stuck.
+        warn "${standalone_path} is a broken symlink -> $(readlink "$standalone_path")"
+        warn "Fish integration will fail open to native fish readline."
+        warn "Re-run the local install to relink it:  sh install.sh --local"
     else
         warn "fish detected but ${standalone_path} is not installed yet."
         warn "Fish integration will stay disabled until the standalone binary is available."
@@ -443,6 +457,12 @@ local_main() {
         DIST_DIR="${REPO_DIR}/target/debug"
     fi
 
+    # Symlink targets must be absolute: INSTALL_DIR is a different tree, so a
+    # relative target (e.g. `target/release/flyline-standalone`) resolves
+    # against INSTALL_DIR and dangles.
+    DIST_DIR="$(abs_dir "$DIST_DIR")"
+    INSTALL_DIR="$(mkdir -p "$INSTALL_DIR" && abs_dir "$INSTALL_DIR")"
+
     standalone_src="${DIST_DIR}/${STANDALONE_BIN}"
     if [ ! -x "$standalone_src" ]; then
         err "No ${STANDALONE_BIN} in ${DIST_DIR}. Build it first:
@@ -471,6 +491,15 @@ local_main() {
 
     ln -sf "${REPO_DIR}/scripts/flyline.fish" "${INSTALL_DIR}/scripts/flyline.fish"
     say "Linked ${INSTALL_DIR}/scripts/flyline.fish -> ${REPO_DIR}/scripts/flyline.fish"
+
+    # Guard against silently shipping a dangling editor: a broken symlink here
+    # means every shell integration fails open to native readline, with no
+    # visible error at the prompt.
+    if ! [ -x "${INSTALL_DIR}/${STANDALONE_BIN}" ]; then
+        err "${INSTALL_DIR}/${STANDALONE_BIN} does not resolve to an executable.
+    Target: $(readlink "${INSTALL_DIR}/${STANDALONE_BIN}" 2>/dev/null || echo '<not a symlink>')
+    This is an installer bug; please report it."
+    fi
 
     if ! has_zsh && ! has_fish; then
         warn "Neither zsh nor fish found on PATH; installed files but skipped shell integration."
